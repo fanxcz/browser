@@ -85,6 +85,7 @@ add_executable(BrowserGui WIN32
     src/gui_main.cpp
     src/gui_render.cpp
     src/gui_input.cpp
+    src/gui_images.cpp
 )
 target_link_libraries(BrowserGui PRIVATE browser_core)
 if(MSVC)

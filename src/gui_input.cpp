@@ -1163,7 +1163,9 @@ void GuiTick(GuiState& state) {
         return n;
     }();
     const size_t inputHash = std::hash<std::wstring>{}(state.input);
+    const bool imagesChanged = GuiSyncImages(state);
     const bool linesDirty =
+        imagesChanged ||
         g_currentUrl != linesUrl ||
         g_currentText.size() != linesTextSize ||
         g_currentLinks.size() != linesLinks ||

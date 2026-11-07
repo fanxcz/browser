@@ -189,9 +189,58 @@ void BuildPageLines(GuiState& state) {
         static_cast<size_t>(std::max(20, state.cols - 8));
 
     state.pageLines.reserve(4096);
+    state.imageSpans.clear();
     const auto wrapped = GuiWrap(pageText, lineWidth, 3000);
-    for (const auto& line : wrapped)
-        state.pageLines.push_back({line, -1, false});
+    for (const auto& line : wrapped) {
+        // \x02 marks an inline <img>: reserve a block of rows and let the
+        // painter blit the decoded bitmap there.
+        if (!line.empty() && line.front() == 0x02) {
+            const std::wstring imgUrl = line.substr(1);
+            if (imgUrl.empty()) continue;
+            const int imgIdx = GuiImageIndex(state, imgUrl);
+            GuiImage& img = state.images[static_cast<size_t>(imgIdx)];
+
+            int rows = 8; // placeholder height while decoding
+            if (img.state == 1) {
+                int wPx = 0, hPx = 0;
+                GuiImageDisplaySize(state, img, wPx, hPx);
+                rows = std::clamp(
+                    (hPx + state.cellH - 1) / state.cellH, 1, 30);
+            } else if (img.state == 2) {
+                rows = 2;
+            }
+
+            // Caption: alt text when known, else a short URL tail.
+            std::wstring caption;
+            for (const auto& pi : g_currentImages) {
+                if (pi.url == imgUrl && !pi.alt.empty()) {
+                    caption = ToWide(pi.alt);
+                    break;
+                }
+            }
+            if (caption.empty()) {
+                const size_t slash = imgUrl.find_last_of(L'/');
+                caption = slash == std::wstring::npos
+                    ? imgUrl : imgUrl.substr(slash + 1);
+                if (caption.empty()) caption = L"image";
+            }
+            if (img.state == 2)
+                caption = L"[не загрузилось] " + caption;
+
+            const int start = static_cast<int>(state.pageLines.size());
+            state.pageLines.push_back({L"▣ " + GuiShorten(caption,
+                lineWidth > 8 ? lineWidth - 8 : lineWidth),
+                -1, false, true, imgIdx, rows, false});
+            state.imageSpans.push_back({start, rows, imgIdx});
+            for (int r = 1; r < rows; ++r)
+                state.pageLines.push_back(
+                    {L"", -1, false, false, -1, 0, true});
+            continue;
+        }
+        const bool isHeading = !line.empty() && line.front() == L'■';
+        state.pageLines.push_back(
+            {line, -1, isHeading, isHeading, -1, 0, false});
+    }
 
     if (state.pageLines.empty())
         state.pageLines.push_back(
@@ -327,6 +376,7 @@ static size_t ItemToRowLocal(const GuiState& state, int item) {
 struct Painter {
     HDC dc = nullptr;
     HFONT font = nullptr;
+    HFONT fontBold = nullptr;
     int cellW = 9, cellH = 18;
     int cols = 0, rows = 0;
 
@@ -338,14 +388,15 @@ struct Painter {
     }
 
     void Text(int x, int y, const std::wstring& s, COLORREF color,
-              int maxCells = -1) {
+              int maxCells = -1, bool bold = false) {
         if (s.empty()) return;
         std::wstring out = s;
         if (maxCells >= 0 && static_cast<int>(out.size()) > maxCells)
             out = GuiShorten(out, static_cast<size_t>(maxCells));
         SetBkMode(dc, TRANSPARENT);
         SetTextColor(dc, color);
-        HFONT old = static_cast<HFONT>(SelectObject(dc, font));
+        HFONT old = static_cast<HFONT>(SelectObject(
+            dc, bold && fontBold ? fontBold : font));
         TextOutW(dc, x * cellW, y * cellH, out.c_str(),
                  static_cast<int>(out.size()));
         SelectObject(dc, old);
@@ -353,8 +404,8 @@ struct Painter {
 
     // Text with find-query highlighting (segments painted separately).
     void TextHighlight(int x, int y, const std::wstring& s, COLORREF color,
-                       const std::wstring& needleWide) {
-        if (needleWide.empty()) { Text(x, y, s, color); return; }
+                       const std::wstring& needleWide, bool bold = false) {
+        if (needleWide.empty()) { Text(x, y, s, color, -1, bold); return; }
         const std::wstring hay = LowerWide(s);
         const std::wstring ndl = LowerWide(needleWide);
         const size_t qlen = ndl.size();
@@ -589,6 +640,7 @@ void RenderFrame(HWND hwnd, GuiState& state) {
     Painter p;
     p.dc = hdc;
     p.font = state.font;
+    p.fontBold = state.fontBold;
     p.cols = std::max(40, static_cast<int>(client.right) / state.cellW);
     p.rows = std::max(15, static_cast<int>(client.bottom) / state.cellH);
     state.cols = p.cols;
@@ -660,12 +712,44 @@ void RenderFrame(HWND hwnd, GuiState& state) {
             state.scrollOffset = row - capacity + 1;
     }
 
+    const ImageSpan* drawnSpan = nullptr;
     for (int visible = 0; visible < capacity; ++visible) {
         const size_t lineIndex = state.scrollOffset +
                                  static_cast<size_t>(visible);
         if (lineIndex >= state.pageLines.size()) break;
         const PageLine& line = state.pageLines[lineIndex];
         const int y = contentTop + visible;
+
+        // Inline image block: blit the bitmap once per span (it may start
+        // above the viewport), skip the covered placeholder rows.
+        const ImageSpan* span = nullptr;
+        for (const auto& s : state.imageSpans) {
+            if (static_cast<size_t>(lineIndex) >=
+                    static_cast<size_t>(s.start) &&
+                static_cast<size_t>(lineIndex) <
+                    static_cast<size_t>(s.start + s.rows)) {
+                span = &s;
+                break;
+            }
+        }
+        if (span) {
+            if (span != drawnSpan &&
+                span->image >= 0 &&
+                span->image < static_cast<int>(state.images.size())) {
+                drawnSpan = span;
+                GuiImage& img =
+                    state.images[static_cast<size_t>(span->image)];
+                int wPx = 0, hPx = 0;
+                GuiImageDisplaySize(state, img, wPx, hPx);
+                const int topCell = contentTop +
+                    (span->start - static_cast<int>(state.scrollOffset));
+                GuiPaintImage(hdc, img, 4 * state.cellW,
+                              topCell * state.cellH, wPx, hPx);
+            }
+            continue;
+        }
+        drawnSpan = nullptr;
+
         COLORREF color = line.heading ? g_pal.accent : g_pal.text;
         if (!line.text.empty() && line.itemIndex < 0) {
             if (line.text.front() == L'■') color = g_pal.accent;
@@ -682,7 +766,8 @@ void RenderFrame(HWND hwnd, GuiState& state) {
             p.Text(4, y, line.text, color, p.cols - 8);
             state.itemRows.push_back({y, line.itemIndex});
         } else {
-            p.TextHighlight(4, y, line.text, color, state.findQuery);
+            p.TextHighlight(4, y, line.text, color, state.findQuery,
+                            line.heading || line.bold);
         }
     }
 

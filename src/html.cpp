@@ -9,6 +9,11 @@
 // HTML5 parsing with Lexbor
 // ---------------------------------------------------------------------------
 
+static std::string GetAttr(lxb_dom_element_t* element, const char* name,
+                           size_t nameLength);
+static std::wstring ResolveAbsoluteUrl(const std::string& hrefUtf8,
+                                       const std::wstring& baseUrl);
+
 static bool IsBlockTag(const std::string& tag) {
     static const std::vector<std::string> tags = {
         "address", "article", "aside", "blockquote", "br", "dd", "div",
@@ -23,6 +28,18 @@ static bool IsBlockTag(const std::string& tag) {
 
 static bool IsHeadingTag(const std::string& tag) {
     return tag.size() == 2 && tag[0] == 'h' && tag[1] >= '1' && tag[1] <= '6';
+}
+
+// Block elements that get a blank line after them — paragraph-like
+// spacing instead of a wall of text. Lists, table parts and inline
+// wrappers stay tight.
+static bool IsParagraphTag(const std::string& tag) {
+    static const std::vector<std::string> tags = {
+        "address", "article", "aside", "blockquote", "div", "figcaption",
+        "figure", "footer", "form", "h1", "h2", "h3", "h4", "h5", "h6",
+        "header", "main", "p", "section"
+    };
+    return std::find(tags.begin(), tags.end(), tag) != tags.end();
 }
 
 static bool IsSkippedTag(const std::string& tag) {
@@ -152,6 +169,7 @@ static void AppendRawText(lxb_dom_node_t* node, std::string& output,
 }
 
 static void AppendDomTextNode(lxb_dom_node_t* node, std::string& output,
+                              const std::wstring& baseUrl,
                               size_t depth = 0, int listDepth = 0) {
     if (!node || depth > MAX_DOM_DEPTH) return;
 
@@ -173,6 +191,21 @@ static void AppendDomTextNode(lxb_dom_node_t* node, std::string& output,
             return;
         if (IsConditionalChromeTag(tag) && !SubtreeHasHeading(node))
             return;
+
+        // <img>: emit a \x02 marker line with the absolute URL. The GUI
+        // renders it as an inline image block; the console shows a
+        // placeholder. data:/blob: URIs are skipped like in the image list.
+        if (tag == "img") {
+            std::string src = GetAttr(element, "src", 3);
+            if (src.empty()) src = GetAttr(element, "data-src", 8);
+            if (src.empty()) src = GetAttr(element, "data-original", 13);
+            if (!src.empty() && src.rfind("data:", 0) != 0) {
+                const std::wstring abs = ResolveAbsoluteUrl(src, baseUrl);
+                if (!abs.empty())
+                    output += "\n\x02" + ToUtf8(abs) + "\n";
+            }
+            return;
+        }
 
         // <pre>: emit each source line prefixed with \x01 so
         // NormalizeDisplayText keeps it verbatim (indentation preserved).
@@ -204,7 +237,8 @@ static void AppendDomTextNode(lxb_dom_node_t* node, std::string& output,
         const int childListDepth = listDepth +
             ((tag == "ul" || tag == "ol") ? 1 : 0);
         if (IsHeadingTag(tag)) {
-            output += "\n■ ";
+            // Blank line before the heading (\x01 = verbatim empty line).
+            output += "\n\x01\n■ ";
         } else if (tag == "li") {
             static const char* marks[] = {"•", "◦", "▪"};
             const int level = std::clamp(listDepth, 1, 3);
@@ -231,17 +265,30 @@ static void AppendDomTextNode(lxb_dom_node_t* node, std::string& output,
 
         for (lxb_dom_node_t* child = node->first_child;
              child != nullptr; child = child->next) {
-            AppendDomTextNode(child, output, depth + 1, childListDepth);
+            AppendDomTextNode(child, output, baseUrl, depth + 1,
+                              childListDepth);
         }
 
-        if (block && (output.empty() || output.back() != '\n'))
-            output.push_back('\n');
+        if (block) {
+            if (IsParagraphTag(tag)) {
+                // Paragraph break: "\n\x01\n" yields one blank line and
+                // collapses when nested blocks already emitted one.
+                const bool hasBreak = output.size() >= 3 &&
+                    output.compare(output.size() - 3, 3, "\n\x01\n") == 0;
+                if (!output.empty() && !hasBreak) {
+                    if (output.back() != '\n') output.push_back('\n');
+                    output += "\x01\n";
+                }
+            } else if (output.empty() || output.back() != '\n') {
+                output.push_back('\n');
+            }
+        }
         return;
     }
 
     for (lxb_dom_node_t* child = node->first_child;
          child != nullptr; child = child->next) {
-        AppendDomTextNode(child, output, depth + 1, listDepth);
+        AppendDomTextNode(child, output, baseUrl, depth + 1, listDepth);
     }
 }
 
@@ -1082,7 +1129,8 @@ ParsedPage ParseHtml5(const std::string& html, const std::wstring& url) {
 
         if (document->body) {
             std::string rawText;
-            AppendDomTextNode(lxb_dom_interface_node(document->body), rawText);
+            AppendDomTextNode(lxb_dom_interface_node(document->body),
+                              rawText, url);
             result.text = NormalizeDisplayText(rawText);
         }
 

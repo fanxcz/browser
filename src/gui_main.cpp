@@ -40,6 +40,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp,
                                FIXED_PITCH | FF_MODERN, L"Consolas");
         if (!st->font)
             st->font = static_cast<HFONT>(GetStockObject(ANSI_FIXED_FONT));
+        st->fontBold = CreateFontW(-18, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+                                   DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                                   CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                                   FIXED_PITCH | FF_MODERN, L"Consolas");
+        if (!st->fontBold)
+            st->fontBold = st->font;
         UpdateMetrics(*st);
 
         // Poll async loads + caret blink + meta refresh, 10 times/sec.
@@ -185,9 +191,13 @@ int GuiMain(HINSTANCE hInstance, int nCmdShow) {
     if (g_downloadThread.joinable())
         g_downloadThread.join();
     ShutdownNetworkSession();
+    GuiClearImages(state);
+    GuiShutdownImages();
     if (shouldUninitializeCom)
         CoUninitialize();
     if (state.font) DeleteObject(state.font);
+    if (state.fontBold && state.fontBold != state.font)
+        DeleteObject(state.fontBold);
     return static_cast<int>(msg.wParam);
 }
 

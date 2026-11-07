@@ -6,6 +6,8 @@
 
 #include "browser.h"
 
+#include <unordered_map>
+
 namespace gui {
 
 enum class Focus { Search, Page };
@@ -14,6 +16,27 @@ struct PageLine {
     std::wstring text;
     int itemIndex = -1;  // >=0: selectable item (links, fields, images)
     bool heading = false;
+    bool bold = false;
+    int imageIndex = -1;   // >=0: first row of an inline image block
+    int imageRows = 0;     // rows the block occupies (incl. this one)
+    bool imageCovered = false; // continuation row of an image block
+};
+
+// A decoded inline image plus its async-load state.
+struct GuiImage {
+    std::wstring url;
+    std::vector<std::array<uint8_t, 3>> rgb;  // RGB on white
+    uint32_t w = 0, h = 0;
+    int state = 0;        // 0 = queued/loading, 1 = ready, 2 = failed
+    HBITMAP dib = nullptr;
+    bool dibReady = false;
+};
+
+// Absolute pageLines range covered by an inline image.
+struct ImageSpan {
+    int start = 0;    // pageLines index of the block's first row
+    int rows = 0;
+    int image = 0;    // index into GuiState::images
 };
 
 struct ItemRow {
@@ -104,6 +127,11 @@ struct GuiState {
     Rect searchBox;
     Rect searchButton;
 
+    // ---- inline images ----
+    std::vector<GuiImage> images;
+    std::unordered_map<std::wstring, int> imageByUrl;
+    std::vector<ImageSpan> imageSpans;
+
     // ---- meta refresh ----
     int refreshSeconds = 0;
     int refreshInterval = 0;
@@ -141,6 +169,15 @@ void GuiHandleMouseMove(GuiState& state, int x, int y);
 void GuiHandleClick(GuiState& state, int x, int y);
 void GuiHandleWheel(GuiState& state, int delta);
 void GuiTick(GuiState& state);
+
+// gui_images.cpp — async inline image loading (WIC decode → DIB).
+int GuiImageIndex(GuiState& state, const std::wstring& url);
+bool GuiSyncImages(GuiState& state);
+void GuiImageDisplaySize(const GuiState& state, const GuiImage& img,
+                         int& wPx, int& hPx);
+void GuiPaintImage(HDC hdc, GuiImage& img, int x, int y, int w, int h);
+void GuiClearImages(GuiState& state);
+void GuiShutdownImages();
 
 // gui_main.cpp
 int GuiMain(HINSTANCE hInstance, int nCmdShow);

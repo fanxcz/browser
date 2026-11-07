@@ -644,8 +644,25 @@ namespace console_ui {
             const auto wrapped = Wrap(pageText, lineWidth, 3000);
             pageLines.reserve(wrapped.size() + g_currentLinks.size() +
                               state.visibleFields.size() + 6);
-            for (const auto& line : wrapped)
+            for (const auto& line : wrapped) {
+                // \x02 marks an inline <img>: show a placeholder with the
+                // alt text (or URL) instead of the raw marker line.
+                if (!line.empty() && line.front() == 0x02) {
+                    const std::wstring imgUrl = line.substr(1);
+                    std::wstring label = imgUrl;
+                    for (const auto& img : g_currentImages) {
+                        if (img.url == imgUrl && !img.alt.empty()) {
+                            label = ToWide(img.alt);
+                            break;
+                        }
+                    }
+                    pageLines.push_back({L"▣ [IMG] " + Shorten(label,
+                        lineWidth > 12 ? lineWidth - 12 : lineWidth),
+                        -1, false});
+                    continue;
+                }
                 pageLines.push_back({line, -1, false});
+            }
 
             if (pageLines.empty())
                 pageLines.push_back({L"На странице нет доступного текстового содержимого.", -1, false});

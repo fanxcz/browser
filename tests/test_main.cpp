@@ -195,6 +195,24 @@ static void TestHtmlParse() {
         CHECK(broken.links[0].url == L"https://example.org/page2.html");
     }
 
+    // Inline <img> becomes a \x02 marker line with the absolute URL and
+    // also lands in the images list.
+    const ParsedPage withImg = ParseHtml5(
+        "<html><body><p>before<img src='/pic.png' alt='Cat'>after</p>"
+        "</body></html>", L"https://example.org/dir/page");
+    CHECK(withImg.text.find("\x02https://example.org/pic.png") !=
+          std::string::npos);
+    CHECK(withImg.images.size() == 1);
+    CHECK(withImg.images[0].url == L"https://example.org/pic.png");
+    CHECK(withImg.images[0].alt == "Cat");
+
+    // Paragraph spacing: consecutive <p> blocks are separated by a
+    // blank (\x01 verbatim) line.
+    const ParsedPage paras = ParseHtml5(
+        "<html><body><p>one</p><p>two</p></body></html>",
+        L"https://example.org/");
+    CHECK(paras.text.find("one\n\x01\ntwo") != std::string::npos);
+
     // Large page: 5000 paragraphs parse quickly and stay bounded.
     std::string big = "<html><body>";
     for (int i = 0; i < 5000; ++i)
