@@ -176,6 +176,25 @@ static void ActivateField(GuiState& state, int itemIndex) {
     }
 }
 
+void GuiOpenImageViewer(GuiState& state, const std::wstring& url,
+                        const std::string& alt) {
+    const int idx = GuiImageIndex(state, url);
+    state.viewImage = idx;
+    state.viewImageUrl = url;
+    state.viewImageCaption = ToWide(alt);
+    if (state.viewImageCaption.empty()) {
+        std::wstring u = url;
+        const size_t q = u.find_first_of(L"?#");
+        if (q != std::wstring::npos) u.resize(q);
+        const size_t slash = u.find_last_of(L"/");
+        state.viewImageCaption =
+            slash == std::wstring::npos ? u : u.substr(slash + 1);
+    }
+    state.viewingImage = true;
+    state.focus = Focus::Page;
+    InvalidateGui();
+}
+
 static void ActivateItem(GuiState& state, int item) {
     if (item < 0 || static_cast<size_t>(item) >= ItemCount(state)) {
         g_consoleStatus = L"Элемент не выбран.";
@@ -187,11 +206,9 @@ static void ActivateItem(GuiState& state, int item) {
     }
     const int img = ImageIndexForItem(state, item);
     if (img >= 0) {
-        // No in-window image viewer in the GUI yet — open externally.
-        const std::wstring url = g_currentImages[static_cast<size_t>(img)].url;
-        ShellExecuteW(nullptr, L"open", url.c_str(), nullptr, nullptr,
-                      SW_SHOWNORMAL);
-        g_consoleStatus = L"Изображение открыто в системном приложении.";
+        const PageImage& pageImg =
+            g_currentImages[static_cast<size_t>(img)];
+        GuiOpenImageViewer(state, pageImg.url, pageImg.alt);
         return;
     }
     ActivateField(state, item);
@@ -409,6 +426,15 @@ void GuiSubmit(GuiState& state) {
 
 void GuiHandleKey(GuiState& state, WPARAM vk, bool shift, bool ctrl,
                   bool alt, bool& running) {
+    // Image viewer is modal: Esc/q/Enter closes, everything else ignored.
+    if (state.viewingImage) {
+        if (vk == VK_ESCAPE || vk == VK_RETURN || vk == 'Q') {
+            state.viewingImage = false;
+            state.viewImage = -1;
+            InvalidateGui();
+        }
+        return;
+    }
     // Ctrl+L — focus omnibox, clear field editing.
     if (ctrl && vk == 'L') {
         state.editingField = -1;
@@ -493,16 +519,8 @@ void GuiHandleKey(GuiState& state, WPARAM vk, bool shift, bool ctrl,
     }
     if (ctrl && shift && vk == 'O') { UiOpenExternalBrowser(); InvalidateGui(); return; }
     if (ctrl && shift && vk == 'L') {
-        // Toggle the GUI palette between dark and light.
-        extern Palette g_palLight;
-        static bool light = false;
-        light = !light;
-        g_pal = light ? g_palLight : Palette{
-            RGB(13, 17, 23), RGB(201, 209, 217), RGB(230, 237, 243),
-            RGB(125, 133, 144), RGB(94, 234, 212), RGB(121, 192, 255),
-            RGB(35, 58, 82), RGB(240, 248, 255), RGB(33, 38, 48),
-            RGB(248, 81, 73)};
-        g_consoleStatus = light ? L"Светлая тема." : L"Тёмная тема.";
+        GuiToggleTheme();
+        g_consoleStatus = g_lightTheme ? L"Светлая тема." : L"Тёмная тема.";
         InvalidateGui();
         return;
     }
@@ -968,6 +986,7 @@ void GuiHandleKey(GuiState& state, WPARAM vk, bool shift, bool ctrl,
 
 // WM_CHAR path: printable text into the omnibox.
 void GuiHandleChar(GuiState& state, wchar_t ch) {
+    if (state.viewingImage) return;
     if (state.focus != Focus::Search) {
         // Typing on a page refocuses the omnibox (like the console UI).
         if (ch >= L' ' && !state.findMode) {
@@ -1013,6 +1032,13 @@ void GuiHandleMouseMove(GuiState& state, int x, int y) {
 }
 
 void GuiHandleClick(GuiState& state, int x, int y) {
+    // Clicking anywhere closes the image viewer.
+    if (state.viewingImage) {
+        state.viewingImage = false;
+        state.viewImage = -1;
+        InvalidateGui();
+        return;
+    }
     // Suggestion dropdown.
     for (const auto& hit : state.suggestHits) {
         if (hit.row == y && x >= hit.left && x <= hit.right &&
@@ -1101,6 +1127,7 @@ void GuiHandleClick(GuiState& state, int x, int y) {
 }
 
 void GuiHandleWheel(GuiState& state, int delta) {
+    if (state.viewingImage) return;
     const size_t notches =
         static_cast<size_t>(std::max(1, std::abs(delta) / WHEEL_DELTA));
     const size_t step = notches * 3;
@@ -1125,6 +1152,14 @@ void GuiHandleWheel(GuiState& state, int delta) {
 
 void GuiTick(GuiState& state) {
     state.caretOn = !state.caretOn;
+
+    // The viewer is bound to a cached image — drop it if the page changed.
+    if (state.viewingImage) {
+        const auto it = state.imageByUrl.find(state.viewImageUrl);
+        if (it == state.imageByUrl.end() ||
+            it->second != state.viewImage)
+            state.viewingImage = false;
+    }
 
     const bool loadChanged = PollAsyncLoad();
 

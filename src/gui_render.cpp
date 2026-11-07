@@ -2,9 +2,11 @@
 
 #include "gui.h"
 
+#include <fstream>
+
 namespace gui {
 
-Palette g_pal{
+Palette g_palDark{
     RGB(13, 17, 23),    // bg        — near-black blue
     RGB(201, 209, 217), // text
     RGB(230, 237, 243), // bright
@@ -16,6 +18,9 @@ Palette g_pal{
     RGB(33, 38, 48),    // box bg
     RGB(248, 81, 73),   // warn red
 };
+
+Palette g_pal = g_palDark;
+bool g_lightTheme = false;
 
 Palette g_palLight{
     RGB(246, 248, 250), // bg
@@ -29,6 +34,40 @@ Palette g_palLight{
     RGB(255, 255, 255), // box bg
     RGB(207, 34, 46),   // warn
 };
+
+// ---------------------------------------------------------------------------
+// Theme persistence — same settings.txt key as the console UI.
+// ---------------------------------------------------------------------------
+
+void GuiLoadTheme() {
+    std::wifstream in(DataDirPath() / L"settings.txt");
+    std::wstring line;
+    while (std::getline(in, line)) {
+        if (line == L"theme=light") { g_lightTheme = true; break; }
+        if (line == L"theme=dark")  { g_lightTheme = false; break; }
+    }
+    g_pal = g_lightTheme ? g_palLight : g_palDark;
+}
+
+static void GuiSaveTheme() {
+    const auto path = DataDirPath() / L"settings.txt";
+    std::vector<std::wstring> lines;
+    {
+        std::wifstream in(path);
+        std::wstring line;
+        while (std::getline(in, line))
+            if (line.rfind(L"theme=", 0) != 0) lines.push_back(line);
+    }
+    lines.push_back(g_lightTheme ? L"theme=light" : L"theme=dark");
+    std::wofstream out(path, std::ios::trunc);
+    for (const auto& l : lines) out << l << L"\n";
+}
+
+void GuiToggleTheme() {
+    g_lightTheme = !g_lightTheme;
+    g_pal = g_lightTheme ? g_palLight : g_palDark;
+    GuiSaveTheme();
+}
 
 static size_t ItemToRowLocal(const GuiState& state, int item);
 
@@ -630,6 +669,79 @@ static void DrawHomeBookmarks(Painter& p, GuiState& state, int topRow) {
 // Main frame
 // ---------------------------------------------------------------------------
 
+// Full-area image viewer overlay (replaces the console truecolor viewer).
+static void DrawImageViewer(Painter& p, GuiState& state, HDC hdc) {
+    GuiImage* img = nullptr;
+    if (state.viewImage >= 0 &&
+        state.viewImage < static_cast<int>(state.images.size())) {
+        GuiImage& cand =
+            state.images[static_cast<size_t>(state.viewImage)];
+        if (cand.url == state.viewImageUrl) img = &cand;
+    }
+    if (!img) {
+        state.viewingImage = false;
+        state.viewImage = -1;
+        return;
+    }
+
+    const int left = 2, top = 6;
+    const int right = std::max(left + 10, p.cols - 2);
+    const int bottom = std::max(top + 4, p.rows - 2);
+    const int x0 = left * p.cellW, y0 = top * p.cellH;
+    const int x1 = right * p.cellW, y1 = bottom * p.cellH;
+
+    // Panel + accent frame.
+    RECT panel{ x0, y0, x1, y1 };
+    HBRUSH brush = CreateSolidBrush(g_pal.box);
+    FillRect(hdc, &panel, brush);
+    DeleteObject(brush);
+    {
+        HBRUSH edge = CreateSolidBrush(g_pal.accent);
+        RECT top_{ x0, y0, x1, y0 + 1 }, bot_{ x0, y1 - 1, x1, y1 };
+        RECT lft_{ x0, y0, x0 + 1, y1 }, rgt_{ x1 - 1, y0, x1, y1 };
+        FillRect(hdc, &top_, edge);
+        FillRect(hdc, &bot_, edge);
+        FillRect(hdc, &lft_, edge);
+        FillRect(hdc, &rgt_, edge);
+        DeleteObject(edge);
+    }
+
+    // Caption row.
+    const int midRow = (top + bottom) / 2;
+    p.Text(left + 1, top + 1,
+           GuiShorten(state.viewImageCaption.empty()
+                          ? L"(без подписи)" : state.viewImageCaption,
+                      static_cast<size_t>(right - left - 26)),
+           g_pal.bright, right - left - 26);
+    const std::wstring hint = L"Esc — закрыть";
+    p.Text(right - static_cast<int>(hint.size()) - 1, top + 1, hint,
+           g_pal.muted);
+
+    // Image area below the caption.
+    const int areaX0 = x0 + p.cellW;
+    const int areaY0 = y0 + 3 * p.cellH;
+    const int areaX1 = x1 - p.cellW;
+    const int areaY1 = y1 - p.cellH;
+    const int availW = std::max(1, areaX1 - areaX0);
+    const int availH = std::max(1, areaY1 - areaY0);
+
+    if (img->state == 0) {
+        DrawCentered(p, midRow, L"Загрузка изображения…", g_pal.muted);
+    } else if (img->state != 1 || !img->w || !img->h) {
+        DrawCentered(p, midRow, L"Не удалось загрузить изображение.",
+                     g_pal.warn);
+    } else {
+        const double scale = std::min(
+            {1.0, static_cast<double>(availW) / img->w,
+             static_cast<double>(availH) / img->h});
+        const int iw = std::max(1, static_cast<int>(img->w * scale));
+        const int ih = std::max(1, static_cast<int>(img->h * scale));
+        const int ix = areaX0 + (availW - iw) / 2;
+        const int iy = areaY0 + (availH - ih) / 2;
+        GuiPaintImage(hdc, *img, ix, iy, iw, ih);
+    }
+}
+
 void RenderFrame(HWND hwnd, GuiState& state) {
     g_state = &state;
     PAINTSTRUCT ps;
@@ -815,6 +927,10 @@ void RenderFrame(HWND hwnd, GuiState& state) {
     DrawCentered(p, p.rows - 1,
         L"j/k — ссылки   Enter — открыть   o — адрес   d — скачать   Ctrl+J — загрузки   Esc — назад",
         g_pal.muted);
+
+    // Full-area image viewer overlay on top of the page.
+    if (state.viewingImage)
+        DrawImageViewer(p, state, hdc);
 
     EndPaint(hwnd, &ps);
 }

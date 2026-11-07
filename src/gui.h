@@ -74,6 +74,9 @@ struct Palette {
 };
 
 extern Palette g_pal;
+extern Palette g_palDark;
+extern Palette g_palLight;
+extern bool g_lightTheme;
 
 struct GuiState {
     HWND hwnd = nullptr;
@@ -139,6 +142,12 @@ struct GuiState {
     std::wstring refreshScanUrl;
     Clock::time_point refreshAt{};
 
+    // ---- image viewer ----
+    bool viewingImage = false;
+    int viewImage = -1;              // index into images
+    std::wstring viewImageUrl;
+    std::wstring viewImageCaption;
+
     // blink phase for the caret (0/1), advanced by the UI timer.
     bool caretOn = true;
 };
@@ -178,6 +187,12 @@ void GuiImageDisplaySize(const GuiState& state, const GuiImage& img,
 void GuiPaintImage(HDC hdc, GuiImage& img, int x, int y, int w, int h);
 void GuiClearImages(GuiState& state);
 void GuiShutdownImages();
+
+// Theme (settings.txt) + image viewer.
+void GuiLoadTheme();
+void GuiToggleTheme();
+void GuiOpenImageViewer(GuiState& state, const std::wstring& url,
+                        const std::string& alt);
 
 // gui_main.cpp
 int GuiMain(HINSTANCE hInstance, int nCmdShow);

@@ -130,6 +130,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp,
 
 int GuiMain(HINSTANCE hInstance, int nCmdShow) {
     GuiState state;
+    GuiLoadTheme();
 
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
@@ -137,7 +138,7 @@ int GuiMain(HINSTANCE hInstance, int nCmdShow) {
     wc.lpfnWndProc = WndProc;
     wc.hInstance = hInstance;
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-    wc.hbrBackground = CreateSolidBrush(RGB(13, 17, 23));
+    wc.hbrBackground = CreateSolidBrush(g_pal.bg);
     wc.lpszClassName = kClassName;
     if (!RegisterClassExW(&wc)) return 1;
 
