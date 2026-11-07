@@ -1058,6 +1058,8 @@ void ShowHelp() {
     std::cout
         << "  " << ui::color(ui::cyan, "find <text>") << "      Find text on the current page\n"
         << "  " << ui::color(ui::cyan, "edge <url>") << "       Render via headless Edge (JS pages)\n"
+        << "  " << ui::color(ui::cyan, "web [url]") << "        Open in the WebView2 window (real rendering)\n"
+        << "  " << ui::color(ui::cyan, "wiki ...") << "         Offline Wikipedia library (ru/en)\n"
         << "  " << ui::color(ui::cyan, "save") << "              Save the current page to saved/\n"
         << "  " << ui::color(ui::cyan, "history") << "          Open visit history page\n"
         << "  " << ui::color(ui::cyan, "bookmarks") << "         Open bookmarks page\n"

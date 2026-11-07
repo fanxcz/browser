@@ -142,6 +142,9 @@ struct GuiState {
     std::wstring refreshScanUrl;
     Clock::time_point refreshAt{};
 
+    // ---- embedded WebView2 page view ----
+    bool webMode = false;
+
     // ---- image viewer ----
     bool viewingImage = false;
     int viewImage = -1;              // index into images
@@ -193,6 +196,12 @@ void GuiLoadTheme();
 void GuiToggleTheme();
 void GuiOpenImageViewer(GuiState& state, const std::wstring& url,
                         const std::string& alt);
+
+// gui_webview.cpp — embedded Chromium page view (webMode).
+void GuiWebToggle(GuiState& state);
+void GuiWebNavigate(GuiState& state, const std::wstring& url);
+void GuiWebResize(const GuiState& state);
+void GuiWebShutdown();
 
 // gui_main.cpp
 int GuiMain(HINSTANCE hInstance, int nCmdShow);

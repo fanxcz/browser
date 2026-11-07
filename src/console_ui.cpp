@@ -1,4 +1,5 @@
 #include "browser.h"
+#include "wvhost.h"
 
 #include <array>
 #include <cwchar>
@@ -1295,6 +1296,62 @@ namespace console_ui {
             state.focus = Focus::Page;
             return;
         }
+        if (lower == L"web" || lower.rfind(L"web ", 0) == 0) {
+            // web [url|back|forward|reload|zoom-*|find <текст>|off]
+            const std::wstring arg = lower.rfind(L"web ", 0) == 0
+                ? TrimWide(value.substr(4)) : L"";
+            const std::wstring a = LowerWide(arg);
+            if (a == L"off" || a == L"close" || a == L"hide") {
+                wv::Hide();
+                g_consoleStatus = L"WebView2-окно скрыто.";
+            } else if (a == L"back") {
+                wv::Back();
+                g_consoleStatus = L"WebView2: назад.";
+            } else if (a == L"forward") {
+                wv::Forward();
+                g_consoleStatus = L"WebView2: вперёд.";
+            } else if (a == L"reload") {
+                wv::Reload();
+                g_consoleStatus = L"WebView2: обновить.";
+            } else if (a == L"zoom-in" || a == L"zoom+") {
+                wv::ZoomIn();
+            } else if (a == L"zoom-out" || a == L"zoom-") {
+                wv::ZoomOut();
+            } else if (a == L"zoom-reset" || a == L"zoom0") {
+                wv::ZoomReset();
+            } else if (a == L"external" || a == L"system") {
+                wv::External();
+                g_consoleStatus = L"Текущая страница открыта в системном браузере.";
+            } else if (a == L"find" || a.rfind(L"find ", 0) == 0) {
+                const std::wstring needle = a == L"find"
+                    ? TrimWide(arg.substr(4)) : TrimWide(arg.substr(5));
+                if (needle.empty()) {
+                    g_consoleStatus = L"Формат: web find <текст>";
+                } else {
+                    wv::Find(needle);
+                    g_consoleStatus = L"Поиск на странице: " + needle;
+                }
+            } else {
+                std::wstring target = arg.empty() ? g_currentUrl : L"";
+                if (target.empty()) {
+                    if (IsUrlLike(arg)) target = NormalizeUrl(arg);
+                    else target = L"https://html.duckduckgo.com/html/?q=" +
+                        ToWide(UrlEncode(ToUtf8(arg)));
+                }
+                if (target.empty()) {
+                    g_consoleStatus = L"Нет адреса — сначала откройте страницу.";
+                } else {
+                    wv::Show(target);
+                    g_consoleStatus =
+                        L"Страница открыта в WebView2-окне (web off — скрыть).";
+                }
+            }
+            return;
+        }
+        if (lower == L"wiki" || lower.rfind(L"wiki ", 0) == 0) {
+            UiWiki(lower == L"wiki" ? L"" : TrimWide(value.substr(5)));
+            return;
+        }
         if (lower == L"stop") { StopDownload(); return; }
         if (lower == L"pause") { UiToggleDownloadPause(); return; }
         if (lower == L"sync" || lower.rfind(L"sync ", 0) == 0) {
@@ -1331,7 +1388,7 @@ namespace console_ui {
         if (lower == L"bookmarks-clear") { UiClearBookmarks(); return; }
         if (lower == L"cache-clear") { UiClearCache(); return; }
         if (lower == L"help") {
-            g_consoleStatus = L"Запрос или адрес + Enter. Команды: back, forward, reload, home, history, bookmarks, downloads, download <url> [имя], edge <url>, stop, bookmark add, clear-history, clear-history-older <дн>, export, import <файл>, bookmarks-clear, cache-clear, exit.";
+            g_consoleStatus = L"Запрос или адрес + Enter. Команды: back, forward, reload, home, history, bookmarks, downloads, download <url> [имя], edge <url>, web [url|back|find <т>], wiki <запрос>|download ru|en, stop, bookmark add, clear-history, clear-history-older <дн>, export, import <файл>, bookmarks-clear, cache-clear, exit.";
             return;
         }
         if (lower.rfind(L"search ", 0) == 0) {

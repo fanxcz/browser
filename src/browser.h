@@ -437,6 +437,11 @@ size_t ActiveDownloadCount();
 void CancelAllDownloads();
 void UiCancelDownloadByName(const std::wstring& name);
 
+// wiki.cpp — offline Wikipedia library (ru/en), WebView2-readable.
+void UiWiki(const std::wstring& args);
+void ShutdownWiki();
+fs::path WikiHtmlRoot();
+
 // Address-bar suggestions from history + bookmarks (cached by file mtime).
 std::vector<std::wstring> GetUrlSuggestions(const std::wstring& prefix,
                                             size_t maxCount);

@@ -1,4 +1,5 @@
 #include "browser.h"
+#include "wvhost.h"
 
 int wmain() {
     SetConsoleOutputCP(CP_UTF8);
@@ -23,6 +24,8 @@ int wmain() {
     const bool shouldUninitializeCom = SUCCEEDED(comInit);
 
     auto shutdown = [&]() {
+        wv::Shutdown();
+        ShutdownWiki();
         ShutdownAsyncLoads();
         g_loadCancel.store(true);
         CancelAllDownloads();
@@ -276,6 +279,67 @@ int wmain() {
             } else {
                 EdgePage(ToWide(target));
             }
+            continue;
+        }
+
+        if (command == "web") {
+            // web [url|back|forward|reload|zoom-*|find <t>|off] —
+            // WebView2 (Chromium) window.
+            std::string arg;
+            std::getline(input, arg);
+            arg = Trim(arg);
+            std::string a = arg;
+            std::transform(a.begin(), a.end(), a.begin(),
+                           [](unsigned char c) { return std::tolower(c); });
+            if (a == "off" || a == "close" || a == "hide") {
+                wv::Hide();
+            } else if (a == "back") {
+                wv::Back();
+            } else if (a == "forward") {
+                wv::Forward();
+            } else if (a == "reload") {
+                wv::Reload();
+            } else if (a == "zoom-in" || a == "zoom+") {
+                wv::ZoomIn();
+            } else if (a == "zoom-out" || a == "zoom-") {
+                wv::ZoomOut();
+            } else if (a == "zoom-reset" || a == "zoom0") {
+                wv::ZoomReset();
+            } else if (a == "external" || a == "system") {
+                wv::External();
+            } else if (a == "find" || a.rfind("find ", 0) == 0) {
+                const std::string needle = a == "find"
+                    ? Trim(arg.substr(4)) : Trim(arg.substr(5));
+                if (needle.empty()) {
+                    std::cout << "Usage: web find <text>\n";
+                } else {
+                    wv::Find(ToWide(needle));
+                }
+            } else {
+                std::wstring url;
+                if (arg.empty()) {
+                    url = g_currentUrl;
+                } else if (IsUrlLike(ToWide(arg))) {
+                    url = NormalizeUrl(ToWide(arg));
+                } else {
+                    url = L"https://html.duckduckgo.com/html/?q=" +
+                          ToWide(UrlEncode(arg));
+                }
+                if (url.empty()) {
+                    std::cout << "Usage: web [url]\n";
+                } else {
+                    wv::Show(url);
+                }
+            }
+            continue;
+        }
+
+        if (command == "wiki") {
+            // wiki [download <ru|en> [part|all|N] | <поиск> | search <т> |
+            //      open <т> | grep <т> | portal | stop | status]
+            std::string arg;
+            std::getline(input, arg);
+            UiWiki(ToWide(Trim(arg)));
             continue;
         }
 

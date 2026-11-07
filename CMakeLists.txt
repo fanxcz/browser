@@ -28,6 +28,19 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(lexbor)
 
+# WebView2 SDK (Chromium) — optional hosted web window for the console UI.
+set(WEBVIEW2_DIR "${CMAKE_SOURCE_DIR}/deps/webview2")
+set(WEBVIEW2_NUPKG "${CMAKE_BINARY_DIR}/webview2.nupkg")
+if(NOT EXISTS "${WEBVIEW2_DIR}/build/native/include/WebView2.h")
+    file(DOWNLOAD
+        "https://api.nuget.org/v3-flatcontainer/microsoft.web.webview2/1.0.4258.31/microsoft.web.webview2.1.0.4258.31.nupkg"
+        "${WEBVIEW2_NUPKG}" SHOW_PROGRESS)
+    file(REMOVE_RECURSE "${WEBVIEW2_DIR}")
+    file(ARCHIVE_EXTRACT INPUT "${WEBVIEW2_NUPKG}"
+         DESTINATION "${WEBVIEW2_DIR}")
+endif()
+set(WEBVIEW2_NATIVE "${WEBVIEW2_DIR}/build/native")
+
 # Core library shared by the browser executable and the test suite.
 add_library(browser_core STATIC
     src/util.cpp
@@ -39,6 +52,8 @@ add_library(browser_core STATIC
     src/sync.cpp
     src/app.cpp
     src/console_ui.cpp
+    src/wvhost.cpp
+    src/wiki.cpp
 )
 
 target_compile_definitions(browser_core PUBLIC
@@ -46,6 +61,7 @@ target_compile_definitions(browser_core PUBLIC
     NOMINMAX
     UNICODE
     _UNICODE
+    _SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING
 )
 
 target_link_libraries(browser_core PUBLIC
@@ -55,6 +71,8 @@ target_link_libraries(browser_core PUBLIC
     windowscodecs
     ole32
 )
+
+target_include_directories(browser_core PRIVATE "${WEBVIEW2_NATIVE}/include")
 
 if(MSVC)
     target_compile_options(browser_core PRIVATE
@@ -66,7 +84,8 @@ else()
 endif()
 
 add_executable(Browser src/main.cpp)
-target_link_libraries(Browser PRIVATE browser_core)
+target_link_libraries(Browser PRIVATE browser_core
+    "${WEBVIEW2_NATIVE}/x64/WebView2LoaderStatic.lib")
 
 if(MSVC)
     target_sources(Browser PRIVATE assets/browser.rc)
@@ -88,7 +107,8 @@ add_executable(BrowserGui WIN32
     src/gui_input.cpp
     src/gui_images.cpp
 )
-target_link_libraries(BrowserGui PRIVATE browser_core)
+target_link_libraries(BrowserGui PRIVATE browser_core
+    "${WEBVIEW2_NATIVE}/x64/WebView2LoaderStatic.lib")
 if(MSVC)
     target_sources(BrowserGui PRIVATE assets/browser.rc)
     target_compile_options(BrowserGui PRIVATE /W4 /permissive- /EHsc /utf-8
