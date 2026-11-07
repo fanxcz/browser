@@ -14,6 +14,42 @@
 // ---------------------------------------------------------------------------
 
 HINTERNET g_session = nullptr;
+
+// Shared WinHTTP session setup: long-lived handle for keep-alive reuse,
+// gzip/deflate decompression and pooled background connections.
+bool InitNetworkSession() {
+    g_session = WinHttpOpen(
+        USER_AGENT,
+        WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+        WINHTTP_NO_PROXY_NAME,
+        WINHTTP_NO_PROXY_BYPASS,
+        0);
+    if (!g_session)
+        return false;
+
+    WinHttpSetTimeouts(g_session, 5000, 5000, 15000, 30000);
+
+    DWORD decompression =
+        WINHTTP_DECOMPRESSION_FLAG_GZIP |
+        WINHTTP_DECOMPRESSION_FLAG_DEFLATE;
+    WinHttpSetOption(g_session, WINHTTP_OPTION_DECOMPRESSION,
+                     &decompression, sizeof(decompression));
+
+#ifdef WINHTTP_OPTION_BACKGROUND_CONNECTIONS
+    DWORD backgroundConnections = 4;
+    WinHttpSetOption(g_session, WINHTTP_OPTION_BACKGROUND_CONNECTIONS,
+                     &backgroundConnections, sizeof(backgroundConnections));
+#endif
+    return true;
+}
+
+void ShutdownNetworkSession() {
+    if (g_session) {
+        CloseConnectionPool();
+        WinHttpCloseHandle(g_session);
+        g_session = nullptr;
+    }
+}
 std::mutex g_outputMutex;
 std::mutex g_cacheMutex;
 std::atomic_bool g_downloadRunning{false};

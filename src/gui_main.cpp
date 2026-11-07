@@ -151,6 +151,17 @@ int GuiMain(HINSTANCE hInstance, int nCmdShow) {
     ShowWindow(hwnd, nCmdShow);
     UpdateWindow(hwnd);
 
+    // Network session + history (same init as the console entry point).
+    if (!InitNetworkSession()) {
+        MessageBoxW(nullptr,
+            L"WinHTTP не удалось инициализировать — сеть недоступна.",
+            L"Browser", MB_ICONERROR);
+        return 1;
+    }
+    const HRESULT comInit = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    const bool shouldUninitializeCom = SUCCEEDED(comInit);
+    LoadHistory();
+
     // Console-UI compatible globals: statuses route to the status line.
     g_consoleUiMode = true;
     g_consolePageOpen = false;
@@ -169,6 +180,13 @@ int GuiMain(HINSTANCE hInstance, int nCmdShow) {
 
     g_consoleUiMode = false;
     ShutdownAsyncLoads();
+    g_loadCancel.store(true);
+    CancelAllDownloads();
+    if (g_downloadThread.joinable())
+        g_downloadThread.join();
+    ShutdownNetworkSession();
+    if (shouldUninitializeCom)
+        CoUninitialize();
     if (state.font) DeleteObject(state.font);
     return static_cast<int>(msg.wParam);
 }

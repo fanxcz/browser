@@ -11,33 +11,11 @@ int wmain() {
     (void)DataDirPath();
     (void)SavedDirPath();
 
-    g_session = WinHttpOpen(
-        USER_AGENT,
-        WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
-        WINHTTP_NO_PROXY_NAME,
-        WINHTTP_NO_PROXY_BYPASS,
-        0);
-
-    if (!g_session) {
+    if (!InitNetworkSession()) {
         std::cerr << "WinHttpOpen failed. Windows error: "
                   << GetLastError() << '\n';
         return 1;
     }
-
-    // One long-lived session lets WinHTTP reuse pooled connections.
-    WinHttpSetTimeouts(g_session, 5000, 5000, 15000, 30000);
-
-    DWORD decompression =
-        WINHTTP_DECOMPRESSION_FLAG_GZIP |
-        WINHTTP_DECOMPRESSION_FLAG_DEFLATE;
-    WinHttpSetOption(g_session, WINHTTP_OPTION_DECOMPRESSION,
-                     &decompression, sizeof(decompression));
-
-#ifdef WINHTTP_OPTION_BACKGROUND_CONNECTIONS
-    DWORD backgroundConnections = 4;
-    WinHttpSetOption(g_session, WINHTTP_OPTION_BACKGROUND_CONNECTIONS,
-                     &backgroundConnections, sizeof(backgroundConnections));
-#endif
 
     LoadHistory();
 
@@ -50,11 +28,7 @@ int wmain() {
         CancelAllDownloads();
         if (g_downloadThread.joinable())
             g_downloadThread.join();
-        if (g_session) {
-            CloseConnectionPool();
-            WinHttpCloseHandle(g_session);
-            g_session = nullptr;
-        }
+        ShutdownNetworkSession();
         if (shouldUninitializeCom)
             CoUninitialize();
     };

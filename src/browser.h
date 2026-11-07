@@ -351,6 +351,10 @@ void ClearHistory();
 void ClearBookmarks();
 void AddBookmark();
 
+// Shared WinHTTP session lifecycle (used by both console and GUI entry points).
+bool InitNetworkSession();
+void ShutdownNetworkSession();
+
 FetchOutcome FetchPage(const std::wstring& url, CacheMode mode,
                        std::atomic_bool* cancel = nullptr,
                        const std::string* postBody = nullptr,
