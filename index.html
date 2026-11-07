@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Browser — консольный браузер для Windows</title>
+<style>
+  :root {
+    --bg: #0b1020;
+    --panel: #111a33;
+    --border: #5eead4;
+    --accent: #5eead4;
+    --text: #e6edf3;
+    --muted: #8b98ad;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: "Segoe UI", system-ui, sans-serif;
+    background: radial-gradient(1200px 600px at 50% -10%, #16224a 0%, var(--bg) 60%);
+    color: var(--text);
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid #22304f;
+    border-radius: 20px;
+    padding: 48px 40px;
+    max-width: 560px;
+    width: 100%;
+    text-align: center;
+    box-shadow: 0 20px 60px rgba(0,0,0,.45);
+  }
+  .logo {
+    width: 88px; height: 88px;
+    margin: 0 auto 20px;
+    border-radius: 22px;
+    background: linear-gradient(160deg, #1b2a52, #0e1730);
+    border: 3px solid var(--border);
+    display: flex; align-items: center; justify-content: center;
+    font-family: Consolas, monospace;
+    font-size: 40px; font-weight: 700;
+    color: var(--accent);
+  }
+  h1 { font-size: 32px; margin-bottom: 8px; }
+  .tag { color: var(--muted); margin-bottom: 28px; }
+  .tag b { color: var(--accent); font-weight: 600; }
+  .btn {
+    display: inline-block;
+    background: var(--accent);
+    color: #06231f;
+    font-weight: 700;
+    font-size: 18px;
+    text-decoration: none;
+    padding: 16px 40px;
+    border-radius: 12px;
+    transition: transform .12s ease, box-shadow .12s ease;
+    box-shadow: 0 8px 24px rgba(94,234,212,.25);
+  }
+  .btn:hover { transform: translateY(-2px); box-shadow: 0 12px 32px rgba(94,234,212,.35); }
+  .meta { margin-top: 18px; color: var(--muted); font-size: 14px; }
+  .meta a { color: var(--accent); text-decoration: none; }
+  .meta a:hover { text-decoration: underline; }
+  .features {
+    margin-top: 36px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    text-align: left;
+  }
+  .feat {
+    background: #0d152b;
+    border: 1px solid #1d2a4d;
+    border-radius: 12px;
+    padding: 14px 16px;
+    font-size: 14px;
+    color: var(--text);
+  }
+  .feat span { color: var(--accent); margin-right: 8px; }
+  footer { margin-top: 32px; color: #5b6b85; font-size: 13px; }
+  @media (max-width: 520px) { .features { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+  <main class="card">
+    <div class="logo">&gt;_</div>
+    <h1>Browser</h1>
+    <p class="tag">Быстрый <b>консольный</b> браузер для Windows 10/11.<br>Без GUI — работает прямо в терминале.</p>
+
+    <a class="btn" href="https://github.com/fanxcz/browser/releases/latest/download/Browser-5.1-windows-x64.exe">
+      Скачать для Windows
+    </a>
+    <p class="meta">
+      <a href="https://github.com/fanxcz/browser/releases">Все релизы</a>
+      &nbsp;·&nbsp; Windows 10/11 x64 &nbsp;·&nbsp; ~2.5 МБ
+    </p>
+
+    <div class="features">
+      <div class="feat"><span>&rsaquo;</span>HTTP/HTTPS, gzip, keep-alive, кэш</div>
+      <div class="feat"><span>&rsaquo;</span>Вкладки, история, закладки</div>
+      <div class="feat"><span>&rsaquo;</span>Загрузки с докачкой и SHA-256</div>
+      <div class="feat"><span>&rsaquo;</span>RSS-ленты и reader-режим</div>
+      <div class="feat"><span>&rsaquo;</span>Картинки в терминале (truecolor)</div>
+      <div class="feat"><span>&rsaquo;</span>Формы, поиск, экспорт данных</div>
+    </div>
+
+    <footer>Запустите Browser.exe в терминале Windows и введите адрес или запрос.</footer>
+  </main>
+</body>
+</html>
