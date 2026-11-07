@@ -33,3 +33,5 @@ Thumbs.db
 
 # Local archives
 /*.zip
+
+deps/
