@@ -1,0 +1,34 @@
+BROWSER 5.1 — CONSOLE ONLY
+
+BUILD:
+  cmake -S . -B build
+  cmake --build build --config Release --parallel
+
+Or:
+  .\build.cmd
+  .\build.ps1
+
+TESTS:
+  cmake --build build --config Release --target browser_tests --parallel
+  .\build\Release\browser_tests.exe
+
+OUTPUT:
+  build\Release\Browser.exe
+
+USE:
+  Start Browser.exe. Enter a search query or website address.
+  Search uses DuckDuckGo HTML first, then Bing and Google if needed.
+  Pages load in the background — the interface stays responsive and Esc cancels.
+  Hover over links to highlight them; click anywhere on a result row to open it.
+  Top navigation controls are clickable. Tab switches between search and page links.
+  Up/Down browse links or previous searches. Enter opens the selected result.
+  Mouse wheel, PageUp/PageDown and Home/End scroll long pages.
+  F6 focuses the search/address field, F5 or Ctrl+R reloads, Alt+Left/Right navigates.
+  Ctrl+D bookmark, Ctrl+H history, Ctrl+J downloads (real tab), Ctrl+T/W tabs.
+  Ctrl+S saves the page, Ctrl+C copies a link URL, Ctrl+V pastes into omnibox.
+  RSS/Atom feeds render as readable lists; JS-shell pages auto-retry via
+  headless Edge when msedge is installed (or use `edge <url>`).
+  Optional sync: `sync push` / `sync pull` via GitHub Gist (needs `gh` CLI).
+
+There is no GUI mode or WebView2 dependency.
+Read README.md for the full control list and limitations.
