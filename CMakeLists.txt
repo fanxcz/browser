@@ -80,28 +80,15 @@ endif()
 
 set_target_properties(Browser PROPERTIES OUTPUT_NAME "Browser")
 
-# WebView2 SDK (Chromium engine) for the windowed browser GUI.
-set(WEBVIEW2_NUPKG "${CMAKE_BINARY_DIR}/webview2.nupkg")
-set(WEBVIEW2_DIR "${CMAKE_SOURCE_DIR}/deps/webview2")
-if(NOT EXISTS "${WEBVIEW2_DIR}/build/native/include/WebView2.h")
-    file(DOWNLOAD
-        "https://api.nuget.org/v3-flatcontainer/microsoft.web.webview2/1.0.4258.31/microsoft.web.webview2.1.0.4258.31.nupkg"
-        "${WEBVIEW2_NUPKG}" SHOW_PROGRESS)
-    file(REMOVE_RECURSE "${WEBVIEW2_DIR}")
-    file(ARCHIVE_EXTRACT INPUT "${WEBVIEW2_NUPKG}"
-         DESTINATION "${WEBVIEW2_DIR}")
-endif()
-set(WEBVIEW2_NATIVE "${WEBVIEW2_DIR}/build/native")
-
-# Windowed browser GUI: WebView2 rendering + custom Win32 chrome.
+# Windowed browser GUI: terminal-style window over browser_core.
+# (src/webui_*.cpp — experimental WebView2 frontend, not built.)
 add_executable(BrowserGui WIN32
-    src/webui_main.cpp
-    src/webui_chrome.cpp
+    src/gui_main.cpp
+    src/gui_render.cpp
+    src/gui_input.cpp
+    src/gui_images.cpp
 )
-target_include_directories(BrowserGui PRIVATE "${WEBVIEW2_NATIVE}/include")
-target_link_libraries(BrowserGui PRIVATE browser_core
-    "${WEBVIEW2_NATIVE}/x64/WebView2LoaderStatic.lib"
-    comctl32)
+target_link_libraries(BrowserGui PRIVATE browser_core)
 if(MSVC)
     target_sources(BrowserGui PRIVATE assets/browser.rc)
     target_compile_options(BrowserGui PRIVATE /W4 /permissive- /EHsc /utf-8
