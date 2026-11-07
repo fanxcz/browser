@@ -69,6 +69,10 @@ add_executable(Browser src/main.cpp)
 target_link_libraries(Browser PRIVATE browser_core)
 
 if(MSVC)
+    target_sources(Browser PRIVATE assets/browser.rc)
+endif()
+
+if(MSVC)
     target_compile_options(Browser PRIVATE /W4 /permissive- /EHsc /utf-8
         $<$<CONFIG:Release>:/O2;/Oi;/Ot;/Gy;/Gw>)
     target_link_options(Browser PRIVATE $<$<CONFIG:Release>:/OPT:REF;/OPT:ICF>)
