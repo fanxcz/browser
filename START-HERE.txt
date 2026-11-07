@@ -13,10 +13,12 @@ TESTS:
   .\build\Release\browser_tests.exe
 
 OUTPUT:
-  build\Release\Browser.exe
+  build\Release\Browser.exe     — консольная версия
+  build\Release\BrowserGui.exe  — оконная версия (лёгкий терминальный GUI)
 
 USE:
-  Start Browser.exe. Enter a search query or website address.
+  Start Browser.exe in a terminal, or BrowserGui.exe for the windowed UI.
+  Enter a search query or website address.
   Search uses DuckDuckGo HTML first, then Bing and Google if needed.
   Pages load in the background — the interface stays responsive and Esc cancels.
   Hover over links to highlight them; click anywhere on a result row to open it.
@@ -30,5 +32,6 @@ USE:
   headless Edge when msedge is installed (or use `edge <url>`).
   Optional sync: `sync push` / `sync pull` via GitHub Gist (needs `gh` CLI).
 
-There is no GUI mode or WebView2 dependency.
+There is no WebView2 or heavy GUI dependency — BrowserGui.exe is a
+lightweight Win32 window that reuses the same console engine.
 Read README.md for the full control list and limitations.

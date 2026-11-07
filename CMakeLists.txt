@@ -80,6 +80,21 @@ endif()
 
 set_target_properties(Browser PROPERTIES OUTPUT_NAME "Browser")
 
+# Lightweight terminal-style GUI (Win32 window, same browser_core engine).
+add_executable(BrowserGui WIN32
+    src/gui_main.cpp
+    src/gui_render.cpp
+    src/gui_input.cpp
+)
+target_link_libraries(BrowserGui PRIVATE browser_core)
+if(MSVC)
+    target_sources(BrowserGui PRIVATE assets/browser.rc)
+    target_compile_options(BrowserGui PRIVATE /W4 /permissive- /EHsc /utf-8
+        $<$<CONFIG:Release>:/O2;/Oi;/Ot;/Gy;/Gw>)
+    target_link_options(BrowserGui PRIVATE $<$<CONFIG:Release>:/OPT:REF;/OPT:ICF>)
+endif()
+set_target_properties(BrowserGui PROPERTIES OUTPUT_NAME "BrowserGui")
+
 # ---------------------------------------------------------------------------
 # Unit tests (pure functions: encoding, URL, charset, HTML parsing, cache)
 # ---------------------------------------------------------------------------
