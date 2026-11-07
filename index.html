@@ -4,110 +4,287 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Browser — консольный браузер для Windows</title>
+<meta name="description" content="Быстрый консольный браузер для Windows 10/11. Без GUI — поиск, вкладки, загрузки, RSS прямо в терминале.">
 <style>
   :root {
-    --bg: #0b1020;
-    --panel: #111a33;
-    --border: #5eead4;
-    --accent: #5eead4;
-    --text: #e6edf3;
-    --muted: #8b98ad;
+    --bg: #ffffff;
+    --bg-soft: #f6f8fa;
+    --ink: #1f2328;
+    --muted: #59636e;
+    --line: #d8dee4;
+    --accent: #0e7490;
+    --accent-dark: #155e75;
+    --accent-soft: #ecfeff;
+    --code-bg: #0d1117;
+    --code-ink: #7ee787;
+    --radius: 10px;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
   body {
-    font-family: "Segoe UI", system-ui, sans-serif;
-    background: radial-gradient(1200px 600px at 50% -10%, #16224a 0%, var(--bg) 60%);
-    color: var(--text);
-    min-height: 100vh;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 24px;
+    font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    line-height: 1.6;
   }
-  .card {
-    background: var(--panel);
-    border: 1px solid #22304f;
-    border-radius: 20px;
-    padding: 48px 40px;
-    max-width: 560px;
-    width: 100%;
-    text-align: center;
-    box-shadow: 0 20px 60px rgba(0,0,0,.45);
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    font-family: "Cascadia Code", Consolas, monospace;
+    background: var(--bg-soft);
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    padding: 1px 6px;
+    font-size: .9em;
   }
-  .logo {
-    width: 88px; height: 88px;
-    margin: 0 auto 20px;
-    border-radius: 22px;
-    background: linear-gradient(160deg, #1b2a52, #0e1730);
-    border: 3px solid var(--border);
+
+  /* ---------- header ---------- */
+  header {
+    position: sticky; top: 0; z-index: 10;
+    background: rgba(255,255,255,.92);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--line);
+  }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 0 20px; }
+  .nav {
+    display: flex; align-items: center; gap: 20px;
+    height: 60px;
+  }
+  .brand {
+    display: flex; align-items: center; gap: 10px;
+    font-weight: 700; font-size: 17px; color: var(--ink);
+  }
+  .brand:hover { text-decoration: none; }
+  .brand .mark {
+    width: 30px; height: 30px; border-radius: 8px;
+    background: var(--code-bg);
+    color: var(--code-ink);
+    font-family: Consolas, monospace; font-size: 15px; font-weight: 700;
     display: flex; align-items: center; justify-content: center;
-    font-family: Consolas, monospace;
-    font-size: 40px; font-weight: 700;
-    color: var(--accent);
   }
-  h1 { font-size: 32px; margin-bottom: 8px; }
-  .tag { color: var(--muted); margin-bottom: 28px; }
-  .tag b { color: var(--accent); font-weight: 600; }
-  .btn {
+  .nav-links { margin-left: auto; display: flex; gap: 22px; font-size: 14px; }
+  .nav-links a { color: var(--muted); }
+  .nav-links a:hover { color: var(--ink); text-decoration: none; }
+
+  /* ---------- hero ---------- */
+  .hero { padding: 72px 0 56px; text-align: center; }
+  .badge {
     display: inline-block;
-    background: var(--accent);
-    color: #06231f;
-    font-weight: 700;
-    font-size: 18px;
-    text-decoration: none;
-    padding: 16px 40px;
-    border-radius: 12px;
-    transition: transform .12s ease, box-shadow .12s ease;
-    box-shadow: 0 8px 24px rgba(94,234,212,.25);
+    font-size: 13px; font-weight: 600;
+    color: var(--accent-dark);
+    background: var(--accent-soft);
+    border: 1px solid #a5f3fc;
+    border-radius: 999px;
+    padding: 4px 14px;
+    margin-bottom: 20px;
   }
-  .btn:hover { transform: translateY(-2px); box-shadow: 0 12px 32px rgba(94,234,212,.35); }
-  .meta { margin-top: 18px; color: var(--muted); font-size: 14px; }
-  .meta a { color: var(--accent); text-decoration: none; }
-  .meta a:hover { text-decoration: underline; }
-  .features {
-    margin-top: 36px;
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 12px;
+  .hero h1 { font-size: 44px; letter-spacing: -0.5px; margin-bottom: 14px; }
+  .hero p.sub { font-size: 18px; color: var(--muted); max-width: 620px; margin: 0 auto 32px; }
+  .hero .term {
+    display: inline-block;
+    background: var(--code-bg);
+    color: var(--code-ink);
+    font-family: Consolas, monospace;
+    font-size: 15px;
+    border-radius: var(--radius);
+    padding: 14px 22px;
+    margin-bottom: 32px;
     text-align: left;
   }
-  .feat {
-    background: #0d152b;
-    border: 1px solid #1d2a4d;
-    border-radius: 12px;
-    padding: 14px 16px;
-    font-size: 14px;
-    color: var(--text);
+  .hero .term .dim { color: #8b949e; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 10px;
+    background: var(--accent); color: #fff;
+    font-size: 16px; font-weight: 600;
+    padding: 13px 28px; border-radius: var(--radius);
+    box-shadow: 0 4px 14px rgba(14,116,144,.25);
+    transition: background .15s ease, transform .15s ease;
   }
-  .feat span { color: var(--accent); margin-right: 8px; }
-  footer { margin-top: 32px; color: #5b6b85; font-size: 13px; }
-  @media (max-width: 520px) { .features { grid-template-columns: 1fr; } }
+  .btn:hover { background: var(--accent-dark); text-decoration: none; transform: translateY(-1px); }
+  .btn .ver { font-weight: 400; opacity: .85; font-size: 14px; }
+  .release-meta { margin-top: 14px; font-size: 13px; color: var(--muted); }
+  .release-meta a { color: var(--accent); }
+
+  /* ---------- sections ---------- */
+  section { padding: 48px 0; border-top: 1px solid var(--line); }
+  section h2 { font-size: 24px; margin-bottom: 8px; letter-spacing: -.2px; }
+  section .lead { color: var(--muted); margin-bottom: 28px; }
+
+  .grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(220px,1fr));
+    gap: 14px;
+  }
+  .card {
+    border: 1px solid var(--line); border-radius: var(--radius);
+    border-top: 3px solid var(--accent);
+    padding: 18px 20px; background: var(--bg-soft);
+  }
+  .card h3 { font-size: 15px; margin-bottom: 6px; }
+  .card p { font-size: 14px; color: var(--muted); }
+
+  table.keys { width: 100%; border-collapse: collapse; font-size: 14px; }
+  table.keys th, table.keys td {
+    text-align: left; padding: 10px 14px;
+    border-bottom: 1px solid var(--line);
+  }
+  table.keys th { color: var(--muted); font-weight: 600; font-size: 13px; text-transform: uppercase; letter-spacing: .4px; }
+  table.keys td:first-child { white-space: nowrap; }
+  table.keys kbd {
+    font-family: Consolas, monospace; font-size: 13px;
+    background: var(--bg-soft); border: 1px solid var(--line);
+    border-bottom-width: 2px; border-radius: 6px; padding: 2px 8px;
+  }
+
+  .steps { counter-reset: step; }
+  .step {
+    display: flex; gap: 16px; padding: 14px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .step:last-child { border-bottom: none; }
+  .step::before {
+    counter-increment: step; content: counter(step);
+    flex: 0 0 30px; height: 30px; border-radius: 50%;
+    background: var(--accent-soft); color: var(--accent-dark);
+    border: 1px solid #a5f3fc;
+    font-weight: 700; font-size: 14px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .step b { display: block; }
+  .step span { color: var(--muted); font-size: 14px; }
+
+  footer {
+    border-top: 1px solid var(--line);
+    padding: 28px 0 40px;
+    color: var(--muted); font-size: 13px;
+    display: flex; justify-content: space-between; flex-wrap: wrap; gap: 10px;
+  }
 </style>
 </head>
 <body>
-  <main class="card">
-    <div class="logo">&gt;_</div>
-    <h1>Browser</h1>
-    <p class="tag">Быстрый <b>консольный</b> браузер для Windows 10/11.<br>Без GUI — работает прямо в терминале.</p>
 
-    <a class="btn" href="https://github.com/fanxcz/browser/releases/latest/download/Browser-5.1-windows-x64.exe">
-      Скачать для Windows
+<header>
+  <div class="wrap nav">
+    <a class="brand" href="#">
+      <span class="mark">&gt;_</span> Browser
     </a>
-    <p class="meta">
-      <a href="https://github.com/fanxcz/browser/releases">Все релизы</a>
-      &nbsp;·&nbsp; Windows 10/11 x64 &nbsp;·&nbsp; ~2.5 МБ
+    <nav class="nav-links">
+      <a href="#features">Возможности</a>
+      <a href="#controls">Управление</a>
+      <a href="#start">Быстрый старт</a>
+      <a href="https://github.com/fanxcz/browser/releases">Релизы</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <div class="hero">
+    <span class="badge" id="ver-badge">Windows 10/11 · x64 · ~2.5 МБ</span>
+    <h1>Browser</h1>
+    <p class="sub">
+      Консольный браузер для Windows. Полноценный веб прямо в терминале —
+      без окон, без GUI, без зависимостей. Один exe-файл.
     </p>
-
-    <div class="features">
-      <div class="feat"><span>&rsaquo;</span>HTTP/HTTPS, gzip, keep-alive, кэш</div>
-      <div class="feat"><span>&rsaquo;</span>Вкладки, история, закладки</div>
-      <div class="feat"><span>&rsaquo;</span>Загрузки с докачкой и SHA-256</div>
-      <div class="feat"><span>&rsaquo;</span>RSS-ленты и reader-режим</div>
-      <div class="feat"><span>&rsaquo;</span>Картинки в терминале (truecolor)</div>
-      <div class="feat"><span>&rsaquo;</span>Формы, поиск, экспорт данных</div>
+    <div>
+      <code class="term"><span class="dim">C:\&gt;</span> Browser.exe <span class="dim"># и вводите адрес или запрос</span></code>
     </div>
+    <div>
+      <a class="btn" id="dl-btn" href="https://github.com/fanxcz/browser/releases/latest/download/Browser-1.0.0-windows-x64.exe">
+        Скачать для Windows
+        <span class="ver" id="dl-ver"></span>
+      </a>
+    </div>
+    <p class="release-meta" id="release-meta">
+      <a href="https://github.com/fanxcz/browser/releases">Все релизы на GitHub</a>
+    </p>
+  </div>
 
-    <footer>Запустите Browser.exe в терминале Windows и введите адрес или запрос.</footer>
-  </main>
+  <section id="features">
+    <h2>Возможности</h2>
+    <p class="lead">Всё, что нужно для повседневного серфинга — минус графическая оболочка.</p>
+    <div class="grid">
+      <div class="card"><h3>Поиск и навигация</h3><p>DuckDuckGo → Bing → Google, история, закладки, вкладки до 12 штук, восстановление сессии.</p></div>
+      <div class="card"><h3>Загрузки</h3><p>До 3 файлов параллельно, очередь, докачка после обрыва, проверка SHA-256.</p></div>
+      <div class="card"><h3>RSS и reader-режим</h3><p>Ленты Atom/RSS как читаемый список новостей, чистый текст статей без мусора.</p></div>
+      <div class="card"><h3>Изображения</h3><p>Truecolor-просмотр картинок прямо в консоли, скачивание в один клик.</p></div>
+      <div class="card"><h3>Формы</h3><p>GET/POST-формы: текст, пароли, чекбоксы, списки — редактирование и отправка.</p></div>
+      <div class="card"><h3>Скорость</h3><p>WinHTTP, gzip, keep-alive, кэш с ETag — повторные страницы открываются мгновенно.</p></div>
+      <div class="card"><h3>Headless Edge</h3><p>JS-сайты автоматически перерисовываются через установленный Edge — YouTube, Gmail и SPA работают.</p></div>
+      <div class="card"><h3>Синхронизация</h3><p>Опционально: история и закладки через GitHub Gist между компьютерами.</p></div>
+    </div>
+  </section>
+
+  <section id="controls">
+    <h2>Управление</h2>
+    <p class="lead">Клавиатура в стиле браузерных хоткеев. Мышь тоже работает — наведение, клик, колесо.</p>
+    <table class="keys">
+      <tr><th>Клавиши</th><th>Действие</th></tr>
+      <tr><td><kbd>j</kbd> <kbd>k</kbd> / <kbd>↑</kbd> <kbd>↓</kbd></td><td>Выбор ссылки или поля на странице</td></tr>
+      <tr><td><kbd>Enter</kbd></td><td>Открыть выбранное / отправить форму</td></tr>
+      <tr><td><kbd>o</kbd></td><td>Адресная строка (омнибокс) с автодополнением</td></tr>
+      <tr><td><kbd>b</kbd> <kbd>f</kbd> <kbd>r</kbd></td><td>Назад / Вперёд / Обновить</td></tr>
+      <tr><td><kbd>Ctrl</kbd>+<kbd>T</kbd> <kbd>W</kbd></td><td>Новая / закрыть вкладка</td></tr>
+      <tr><td><kbd>Ctrl</kbd>+<kbd>J</kbd></td><td>Загрузки (открыть файл, sha256, отмена)</td></tr>
+      <tr><td><kbd>Ctrl</kbd>+<kbd>H</kbd> <kbd>D</kbd> <kbd>B</kbd></td><td>История / закладка / закладки</td></tr>
+      <tr><td><kbd>Ctrl</kbd>+<kbd>S</kbd></td><td>Сохранить страницу в saved/</td></tr>
+      <tr><td><kbd>d</kbd> на ссылке</td><td>Скачать файл</td></tr>
+      <tr><td><kbd>Esc</kbd></td><td>Отмена загрузки → назад → выход</td></tr>
+    </table>
+    <p class="lead" style="margin-top:20px">Полный список — команда <code>help</code> внутри браузера.</p>
+  </section>
+
+  <section id="start">
+    <h2>Быстрый старт</h2>
+    <div class="steps">
+      <div class="step"><div><b>Скачайте Browser.exe</b><span>Один файл, ~2.5 МБ. Распакуйте в любую папку.</span></div></div>
+      <div class="step"><div><b>Запустите в терминале</b><span>Windows Terminal, PowerShell или cmd — двойной клик по ярлыку тоже сработает.</span></div></div>
+      <div class="step"><div><b>Введите адрес или запрос</b><span>Например <code>wikipedia.org</code> или <code>погода москва</code> — нажмите Enter.</span></div></div>
+      <div class="step"><div><b>Пользуйтесь</b><span><code>j/k</code> — по ссылкам, <code>Enter</code> — открыть, <code>o</code> — новый адрес.</span></div></div>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap" style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;width:100%">
+    <span>Browser · MIT License</span>
+    <span><a href="https://github.com/fanxcz/browser">github.com/fanxcz/browser</a></span>
+  </div>
+</footer>
+
+<script>
+(function () {
+  var fallback = "https://github.com/fanxcz/browser/releases/latest/download/Browser-1.0.0-windows-x64.exe";
+  fetch("https://api.github.com/repos/fanxcz/browser/releases/latest")
+    .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+    .then(function (rel) {
+      var btn = document.getElementById("dl-btn");
+      var ver = document.getElementById("dl-ver");
+      var badge = document.getElementById("ver-badge");
+      var meta = document.getElementById("release-meta");
+      var tag = rel.tag_name || "";
+      var asset = (rel.assets || [])[0];
+      if (asset && asset.browser_download_url) btn.href = asset.browser_download_url;
+      if (tag) {
+        ver.textContent = tag;
+        badge.textContent = "Windows 10/11 · x64" +
+          (asset && asset.size ? " · " + (asset.size / 1048576).toFixed(1) + " МБ" : "");
+      }
+      if (rel.published_at) {
+        var d = new Date(rel.published_at);
+        meta.innerHTML = 'Релиз ' + tag + ' от ' +
+          d.toLocaleDateString("ru-RU") +
+          ' · <a href="' + rel.html_url + '">страница релиза</a>' +
+          ' · <a href="https://github.com/fanxcz/browser/releases">все релизы</a>';
+      }
+    })
+    .catch(function () {
+      // GitHub API unavailable — the static fallback link still works.
+      document.getElementById("release-meta").innerHTML =
+        '<a href="https://github.com/fanxcz/browser/releases">Все релизы на GitHub</a>';
+    });
+})();
+</script>
+
 </body>
 </html>
