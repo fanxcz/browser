@@ -1149,6 +1149,43 @@ void GuiTick(GuiState& state) {
         SetWindowTextW(state.hwnd, title.c_str());
     }
 
+    // Rebuild the wrapped page lines only when the visible content may
+    // have changed — wrapping is too expensive to run every tick.
+    static std::wstring linesUrl;
+    static size_t linesTextSize = 0, linesLinks = 0, linesFields = 0,
+                  linesImages = 0, linesInputHash = 0;
+    static int linesCols = 0, linesRows = 0;
+    static bool linesFindMode = false;
+    const size_t fieldsCount = [] {
+        size_t n = 0;
+        for (const auto& f : g_currentFields)
+            if (f.kind != FieldKind::Hidden) ++n;
+        return n;
+    }();
+    const size_t inputHash = std::hash<std::wstring>{}(state.input);
+    const bool linesDirty =
+        g_currentUrl != linesUrl ||
+        g_currentText.size() != linesTextSize ||
+        g_currentLinks.size() != linesLinks ||
+        fieldsCount != linesFields ||
+        g_currentImages.size() != linesImages ||
+        inputHash != linesInputHash ||
+        state.cols != linesCols || state.rows != linesRows ||
+        state.findMode != linesFindMode ||
+        state.pageLines.empty();
+    if (linesDirty) {
+        linesUrl = g_currentUrl;
+        linesTextSize = g_currentText.size();
+        linesLinks = g_currentLinks.size();
+        linesFields = fieldsCount;
+        linesImages = g_currentImages.size();
+        linesInputHash = inputHash;
+        linesCols = state.cols;
+        linesRows = state.rows;
+        linesFindMode = state.findMode;
+        BuildPageLines(state);
+    }
+
     if (state.refreshSeconds > 0 && Clock::now() >= state.refreshAt &&
         g_consolePageOpen && !g_loadRunning.load()) {
         if (state.refreshInterval > 0) {
