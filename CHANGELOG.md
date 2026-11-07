@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0 — Первый публичный релиз
+
+- Публичная версия: `Browser/1.0` в User-Agent, баннер `v1.0`, VERSIONINFO 1.0.0.0.
+- Весь функционал из записей 4.x–5.x ниже — история разработки до публикации.
+
 ## 5.1 — Modular source, Gist sync, download pause
 
 - **Source split for maintainability**: `app.cpp` (~3600 lines) was split into focused translation units — `storage.cpp` (history/bookmarks/export/import/internal pages), `feeds.cpp` (RSS/Atom rendering), `downloads.cpp` (queue, parallel workers, resume, SHA-256, downloads page) and `sync.cpp` (Gist sync). Shared declarations live in `browser.h`; largest file is now ~2100 lines.

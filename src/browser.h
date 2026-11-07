@@ -52,7 +52,7 @@ static constexpr size_t MAX_PAGE_FORMS = 20;
 static constexpr size_t MAX_DOM_DEPTH = 512;
 static constexpr size_t MAX_HISTORY_ENTRIES = 500;
 static constexpr uint64_t MAX_DOWNLOAD_BYTES = 2ULL * 1024 * 1024 * 1024; // 2 GiB
-static const wchar_t* USER_AGENT = L"Browser/4.0 (Windows; Console; C++20)";
+static const wchar_t* USER_AGENT = L"Browser/1.0 (Windows; Console; C++20)";
 
 enum class CacheMode {
     Use,

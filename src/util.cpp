@@ -430,7 +430,7 @@ namespace ui {
             << color(cyan, "  ╭──────────────────────────────────────────────────────────────────────╮") << "\n"
             << color(cyan, "  │") << "  " << color(bold, white, "BROWSER") << "  "
             << color(muted, "C++20  ·  WINDOWS  ·  HTML5  ·  HTTPS")
-            << "                 " << color(green, "v4.0") << "  "
+            << "                 " << color(green, "v1.0") << "  "
             << color(cyan, "│") << "\n"
             << color(cyan, "  ├──────────────────────────────────────────────────────────────────────┤") << "\n"
             << color(cyan, "  │") << "  " << color(green, "READY")

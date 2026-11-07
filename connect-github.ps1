@@ -68,12 +68,12 @@ if ($LASTEXITCODE -ne 0) { throw "git add failed." }
 
 & git rev-parse --verify HEAD *> $null
 if ($LASTEXITCODE -ne 0) {
-    & git commit -m "Initial commit: Browser 5.1"
+    & git commit -m "Initial commit: Browser 1.0"
     if ($LASTEXITCODE -ne 0) { throw "Initial commit failed." }
 } else {
     & git diff --cached --quiet
     if ($LASTEXITCODE -ne 0) {
-        & git commit -m "Update Browser 5.1"
+        & git commit -m "Update Browser 1.0"
         if ($LASTEXITCODE -ne 0) { throw "Git commit failed." }
     }
 }

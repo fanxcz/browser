@@ -1,4 +1,4 @@
-BROWSER 5.1 — CONSOLE ONLY
+BROWSER 1.0 — CONSOLE ONLY
 
 BUILD:
   cmake -S . -B build
