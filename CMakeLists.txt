@@ -48,6 +48,7 @@ add_library(browser_core STATIC
     src/html.cpp
     src/storage.cpp
     src/feeds.cpp
+    src/ai.cpp
     src/downloads.cpp
     src/sync.cpp
     src/app.cpp

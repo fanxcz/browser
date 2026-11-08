@@ -69,6 +69,7 @@ bool g_consolePageOpen = false;
 int g_refreshSeconds = 0;
 std::string g_refreshUrl;
 bool g_isFeed = false;
+FetchOutcome g_lastAiOutcome;
 std::wstring g_consoleStatus;
 bool g_offline = false;
 std::vector<Link> g_currentLinks;
@@ -1265,10 +1266,30 @@ void LoadWorker(LoadJob job) {
             const std::wstring queued = DownloadQueueSummary();
             if (!queued.empty())
                 result.statusText += L"  |  " + queued;
+        } else if (job.url == std::wstring(kInternalPrefix) + L"ai") {
+            // AI answer page — replay the last response (prompt isn't
+            // stored in nav history, so we can't regenerate it).
+            if (g_lastAiOutcome.ok) {
+                result.outcome = g_lastAiOutcome;
+                result.ok = true;
+                result.statusText = L"Ответ ИИ.";
+            } else {
+                result.ok = false;
+                result.statusText = L"Ответ ИИ больше не доступен.";
+            }
         } else {
             result.ok = false;
             result.statusText = L"Неизвестная внутренняя страница.";
         }
+    } else if (job.kind == LoadJob::Kind::Ai) {
+        result.outcome = AiAsk(job.query, job.aiContext);
+        result.ok = result.outcome.ok;
+        result.statusText = result.ok
+            ? L"Ответ ИИ готов."
+            : (result.outcome.error.empty()
+                   ? L"ИИ не ответил."
+                   : result.outcome.error);
+        if (result.ok) g_lastAiOutcome = result.outcome;
     } else if (job.kind == LoadJob::Kind::Url) {
         result.outcome = FetchPage(job.url, job.mode, &g_loadCancel,
             job.postBody.empty() ? nullptr : &job.postBody,
@@ -1766,6 +1787,47 @@ void UiOpenUrl(const std::wstring& rawUrl, CacheMode mode) {
     job.kind = LoadJob::Kind::Url;
     job.url = url;
     job.mode = mode;
+    job.addToNavigation = true;
+    job.recordVisit = true;
+    job.tabIndex = g_activeTab;
+    QueueOrStart(job);
+}
+
+// ai <вопрос> | ai @ <вопрос> | ai sum — ask the built-in AI
+// (Pollinations.ai, free, no key). '@'/'page' adds the current page as
+// context; 'sum' summarizes it.
+void UiAi(const std::wstring& args) {
+    std::wstring a = TrimWide(args);
+    if (a.empty()) {
+        g_consoleStatus =
+            L"Формат: ai <вопрос> · ai @ <вопрос> (контекст страницы) · "
+            L"ai sum (суть страницы). ИИ: Pollinations.ai, без ключа.";
+        return;
+    }
+    bool withPage = false;
+    std::wstring lower = LowerWide(a);
+    if (lower == L"sum" || lower == L"summary" || lower == L"суть" ||
+        lower == L"перескажи") {
+        withPage = true;
+        a = L"Кратко перескажи главное из этого текста.";
+    } else if (lower.rfind(L"@ ", 0) == 0 ||
+               lower.rfind(L"page ", 0) == 0) {
+        withPage = true;
+        a = TrimWide(a.substr(2));
+        if (a.empty()) {
+            g_consoleStatus = L"Формат: ai @ <вопрос>";
+            return;
+        }
+    }
+    if (withPage && g_currentText.empty()) {
+        g_consoleStatus = L"Нет открытой страницы для контекста.";
+        return;
+    }
+    EnsureTabs();
+    LoadJob job;
+    job.kind = LoadJob::Kind::Ai;
+    job.query = ToUtf8(a);
+    job.aiContext = withPage;
     job.addToNavigation = true;
     job.recordVisit = true;
     job.tabIndex = g_activeTab;

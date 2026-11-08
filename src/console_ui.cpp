@@ -263,7 +263,6 @@ namespace console_ui {
         int searchButtonLeft = -1;
         int searchButtonRight = -1;
         bool findMode = false;
-        bool cmdMode = false;   // bottom command line (opened by ':'/';'/F2)
         std::wstring findQuery;
         size_t findPos = 0;
         int editingField = -1;      // >= 0: omnibox edits g_currentFields[N]
@@ -586,8 +585,6 @@ namespace console_ui {
         } else if (state.input.empty()) {
             if (state.findMode) {
                 shown = L"Найти на странице…";
-            } else if (state.cmdMode) {
-                shown = L"> команда…  (back · stats · tabs · help)";
             } else if (g_consolePageOpen) {
                 // Browser-style omnibox: show the current URL until the user types.
                 shown = g_currentUrl;
@@ -825,45 +822,53 @@ namespace console_ui {
             state.suggestSource = state.input;
             state.suggestIndex = -1; // input changed: drop stale highlight
         }
-        // Command mode → command autocomplete (bottom command line).
-        if (state.cmdMode) {
-            static const wchar_t* kCommands[] = {
-                L"back", L"forward", L"reload", L"home", L"history",
-                L"bookmarks", L"downloads", L"download", L"stats", L"tabs",
-                L"copy", L"source", L"info", L"reader", L"backup",
-                L"session", L"md", L"bookmark", L"clear-history",
-                L"export",
-                L"import", L"bookmarks-clear", L"cache-clear", L"edge",
-                L"web", L"sync", L"stop", L"pause", L"exit" };
-            const std::wstring needle = LowerWide(state.input);
-            state.suggestions.clear();
-            for (const wchar_t* cmd : kCommands) {
-                if (state.suggestions.size() >= 8) break;
-                if (needle.empty() ||
-                    LowerWide(cmd).find(needle) == 0)
-                    state.suggestions.push_back(cmd);
-            }
-            if (state.suggestIndex >=
-                static_cast<int>(state.suggestions.size()))
-                state.suggestIndex = -1;
-        } else if (!state.input.empty() && state.input.front() == L':' &&
-            state.input.size() >= 2) {
-            // Legacy ':'-prefixed input still completes commands.
-            state.suggestions.clear();
-        } else if (state.focus == Focus::Search && !state.findMode &&
-            state.editingField < 0 && state.input.size() >= 2)
+        if (state.focus == Focus::Search && !state.findMode &&
+            state.editingField < 0 && !state.input.empty() &&
+            state.input.size() >= 2)
             state.suggestions = GetUrlSuggestions(state.input, 8);
+        // Command autocomplete: a single bare word that prefixes a known
+        // command gets command suggestions ahead of URL matches.
+        {
+            const std::wstring in = TrimWide(state.input);
+            if (state.focus == Focus::Search && !state.findMode &&
+                !in.empty() && in.size() < 24 &&
+                in.find(L' ') == std::wstring::npos &&
+                in.find(L':') == std::wstring::npos &&
+                ((in[0] >= L'a' && in[0] <= L'z') ||
+                 (in[0] >= L'A' && in[0] <= L'Z'))) {
+                static const wchar_t* kCmds[] = {
+                    L"ai", L"back", L"forward", L"reload", L"home",
+                    L"history", L"bookmarks", L"downloads", L"download",
+                    L"stats", L"tabs", L"copy", L"source", L"info",
+                    L"reader", L"backup",
+                    L"session", L"md", L"markdown", L"bookmark", L"dup",
+                    L"reopen", L"clear-history", L"export", L"import",
+                    L"bookmarks-clear", L"cache-clear", L"edge", L"web",
+                    L"sync", L"stop", L"pause", L"exit",
+                    L"help", L"open", L"search", L"download" };
+                const std::wstring low = LowerWide(in);
+                std::vector<std::wstring> cmds;
+                for (const wchar_t* c : kCmds) {
+                    const std::wstring cmd = c;
+                    if (cmd.size() >= low.size() &&
+                        LowerWide(cmd).compare(0, low.size(), low) == 0)
+                        cmds.push_back(cmd);
+                    if (cmds.size() >= 6) break;
+                }
+                if (!cmds.empty()) {
+                    cmds.insert(cmds.end(), state.suggestions.begin(),
+                                state.suggestions.end());
+                    if (cmds.size() > 8) cmds.resize(8);
+                    state.suggestions = std::move(cmds);
+                }
+            }
+        }
         if (state.suggestIndex >=
             static_cast<int>(state.suggestions.size()))
             state.suggestIndex = -1;
         const int width = state.width;
         const int height = state.height;
         const bool loading = g_loadRunning.load();
-        // Bottom command line (input starts with ':') is repainted after
-        // page content so the box is not overdrawn by page lines.
-        const bool cmdLine = state.cmdMode ||
-            (state.focus == Focus::Search && !state.input.empty() &&
-             state.input.front() == L':');
 
         DrawTabStrip(state); // row 0: browser tabs, always visible
         DrawSettingsButton(state); // row 1, right edge: ⚙ Настройки
@@ -886,9 +891,9 @@ namespace console_ui {
             }
             // ":cmd" input renders as a bottom command line instead of
             // the top omnibox (like Vim's command line).
-            DrawSearchBox(state, cmdLine ? std::max(3, height - 5) : center - 2);
+            DrawSearchBox(state, center - 2);
             Center(state, center + 2,
-                   L"Введите запрос или адрес  ·  Enter  ·  ; — команды внизу", kMuted);
+                   L"Введите запрос или адрес  ·  Enter ", kMuted);
             Center(state, center + 4,
                    L"Ctrl+H — история   Ctrl+F — найти   j/k — ссылки   Enter — открыть   o — адрес", kMuted);
             DrawHomeBookmarks(state, center + 6);
@@ -920,7 +925,7 @@ namespace console_ui {
                 navX = DrawNavButton(state, navX, L"⌂ Домой", NavAction::Home, true, 1);
                 navX = DrawNavButton(state, navX, L"↻ Обновить", NavAction::Reload, canReload, 1);
             }
-            DrawSearchBox(state, cmdLine ? std::max(3, height - 5) : 3);
+            DrawSearchBox(state, 3);
 
             const size_t textLimit = std::min<size_t>(g_currentText.size(), MAX_DISPLAY_CHARS);
             const std::wstring pageText = ToWide(g_currentText.substr(0, textLimit));
@@ -1200,9 +1205,6 @@ namespace console_ui {
             At(state, 2, footerRow, footer, kMuted, width - 4);
         }
 
-        // Repaint the bottom command box over page content when active.
-        if (cmdLine && height >= 10)
-            DrawSearchBox(state, std::max(3, height - 5));
         // Autocomplete dropdown paints last so it overlays page content.
         DrawSuggestions(state);
         DrawSettingsMenu(state);
@@ -1615,7 +1617,6 @@ namespace console_ui {
         if (!value.empty() && value.front() == L':')
             value = TrimWide(value.substr(1));
         state.input.clear();
-        state.cmdMode = false;
         state.caret = 0;
         state.inputViewStart = 0;
         state.browsingHistory = false;
@@ -1796,10 +1797,27 @@ namespace console_ui {
         if (lower == L"bookmarks-clear") { UiClearBookmarks(); return; }
         if (lower == L"cache-clear") { UiClearCache(); return; }
         if (lower == L"help") {
-            g_consoleStatus = L"Запрос или адрес + Enter. Команды: back, forward, reload, home, history, bookmarks, downloads, download <url> [имя], edge <url>, web [url|back|find <т>], stop, bookmark add, stats, tabs, copy, source, info, clear-history, clear-history-older <дн>, export, import <файл>, bookmarks-clear, cache-clear, exit. Клавиши на странице: j/k, Enter, o, /, b/f, g/G, u — исходник, i — инфо, h — история, n/w — вкладки, ,/. — навигация, s — сохранить, a — закладка, e — внешний браузер, v — вставить, z — копировать текст, ? — справка.";
+            g_consoleStatus = L"Запрос или адрес + Enter. Команды: back, forward, reload, home, history, bookmarks, downloads, download <url> [имя], edge <url>, web [url|back|find <т>], ai [@] <вопрос>, ai sum, stop, bookmark add, stats, tabs, dup, reopen, copy, source, info, reader, md, backup, session, clear-history, clear-history-older <дн>, export, import <файл>, bookmarks-clear, cache-clear, exit. Клавиши на странице: j/k, Enter, o, /, b/f, g/G, u — исходник, i — инфо, h — история, n/w — вкладки, ,/. — навигация, s — сохранить (Shift+S — markdown), a — закладка, e — внешний браузер, v — вставить, c — копировать ссылку, z/Ctrl+Shift+C — текст страницы, y — копировать URL, F3 — следующее совпадение, ? — справка.";
             return;
         }
         if (lower == L"stats") { UiShowStats(); return; }
+        if (lower == L"ai" || lower.rfind(L"ai ", 0) == 0 ||
+            lower.rfind(L"ai@", 0) == 0) {
+            UiAi(lower == L"ai" ? L"" : TrimWide(value.substr(3)));
+            state.focus = Focus::Page;
+            return;
+        }
+        if (lower == L"dup" || lower == L"duplicate") {
+            // Duplicate the active tab: reopen its URL in a new tab.
+            if (!g_currentUrl.empty() && !IsInternalPageUrl(g_currentUrl))
+                ApplyView(state, UiOpenInNewTab(g_currentUrl,
+                                                CurrentView(state)));
+            return;
+        }
+        if (lower == L"reopen" || lower == L"reopen-tab") {
+            ApplyView(state, UiReopenClosedTab(CurrentView(state)));
+            return;
+        }
         if (lower == L"tabs") { UiShowTabs(); return; }
         if (lower == L"copy") {
             if (!g_currentUrl.empty() && UiCopyToClipboard(g_currentUrl))
@@ -2015,6 +2033,15 @@ namespace console_ui {
                 g_consoleStatus = L"Нечего копировать.";
             return;
         }
+        if (ctrl && shift && code == 'C') {
+            // Copy the whole page text (Ctrl+Shift+C, like browsers).
+            if (!g_currentText.empty() &&
+                UiCopyToClipboard(ToWide(g_currentText)))
+                g_consoleStatus = L"Текст страницы скопирован.";
+            else
+                g_consoleStatus = L"На странице нет текста.";
+            return;
+        }
         if (ctrl && code == 'V' && state.focus == Focus::Search) {
             // Paste clipboard text into the omnibox at the caret.
             const std::wstring clip = UiGetClipboardText();
@@ -2028,6 +2055,47 @@ namespace console_ui {
         }
         if ((ctrl && code == 'R') || code == VK_F5) {
             if (g_consolePageOpen) ActivateAction(state, NavAction::Reload);
+            return;
+        }
+        if (code == VK_F3) { // find next occurrence on the page
+            FindNextOnPage(state);
+            return;
+        }
+        if (ctrl && code == VK_HOME && state.focus == Focus::Page &&
+            g_consolePageOpen) {
+            state.scrollOffset = 0;
+            return;
+        }
+        if (ctrl && code == VK_END && state.focus == Focus::Page &&
+            g_consolePageOpen) {
+            const size_t cap = state.pageCapacity > 0
+                ? static_cast<size_t>(state.pageCapacity) : 20;
+            state.scrollOffset = state.pageLineCount > cap
+                ? state.pageLineCount - cap : 0;
+            return;
+        }
+        if (ctrl && code == 'U' && state.focus == Focus::Search) {
+            // Clear the omnibox.
+            state.input.clear();
+            state.caret = 0;
+            state.inputViewStart = 0;
+            state.suggestIndex = -1;
+            return;
+        }
+        if (ctrl && code == VK_BACK && state.focus == Focus::Search) {
+            // Delete the word before the caret.
+            size_t p = state.caret;
+            while (p > 0 && (state.input[p - 1] == L' ' ||
+                             state.input[p - 1] == L'\t'))
+                --p;
+            while (p > 0 && state.input[p - 1] != L' ' &&
+                   state.input[p - 1] != L'\t')
+                --p;
+            if (p < state.caret) {
+                state.input.erase(p, state.caret - p);
+                state.caret = p;
+                state.suggestIndex = -1;
+            }
             return;
         }
         if (alt && code == VK_LEFT) { ActivateAction(state, NavAction::Back); return; }
@@ -2126,11 +2194,6 @@ namespace console_ui {
                 state.findMode = false;
                 // Keep findQuery so matches stay highlighted until the next
                 // search or navigation, like in a regular browser.
-                state.focus = Focus::Page;
-            } else if (state.cmdMode) {
-                state.cmdMode = false;
-                state.input.clear(); state.caret = 0;
-                state.inputViewStart = 0;
                 state.focus = Focus::Page;
             } else if (!state.input.empty()) {
                 state.input.clear(); state.caret = 0; state.inputViewStart = 0;
@@ -2247,17 +2310,6 @@ namespace console_ui {
                 state.hoveredItem = -1;
             };
 
-            if (ch == L':' || ch == L';' || code == VK_F2) {
-                // Bottom command line: type commands directly, no prefix.
-                state.cmdMode = true;
-                state.input.clear();
-                state.caret = 0;
-                state.inputViewStart = 0;
-                state.findMode = false;
-                state.focus = Focus::Search;
-                state.browsingHistory = false;
-                return;
-            }
             if (lowerCh == L'j') { moveItems(1); return; }
             if (lowerCh == L'k') { moveItems(-1); return; }
             if (code == VK_SPACE) {
@@ -2462,6 +2514,7 @@ namespace console_ui {
                 return;
             }
             if (lowerCh == L'm') { UiReaderMode(); return; }
+            if (ch == L'S') { UiSavePageMarkdown(); return; } // Shift+S
             if (lowerCh == L's') { UiSavePage(); return; }
             if (lowerCh == L'a') { UiBookmark(); return; }
             if (lowerCh == L'c') { // copy selected link/image URL, else page URL

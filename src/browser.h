@@ -168,7 +168,7 @@ extern bool g_isFeed;   // current page is an RSS/Atom feed view
 
 // A navigation request executed on a worker thread.
 struct LoadJob {
-    enum class Kind { Url, Search, Internal, EdgeDom } kind = Kind::Url;
+    enum class Kind { Url, Search, Internal, EdgeDom, Ai } kind = Kind::Url;
     std::wstring url;          // Kind::Url
     std::string query;         // Kind::Search (UTF-8)
     CacheMode mode = CacheMode::Use;
@@ -177,6 +177,7 @@ struct LoadJob {
     int navIndexTarget = -1;   // >= 0: set g_navigationIndex on success
     size_t tabIndex = 0;       // tab the job was started for
     std::string postBody;      // non-empty → POST with this urlencoded body
+    bool aiContext = false;    // Kind::Ai: include current page text
 };
 
 // ---------------------------------------------------------------------------
@@ -443,6 +444,10 @@ uint64_t TotalDownloadProgress();
 size_t ActiveDownloadCount();
 void CancelAllDownloads();
 void UiCancelDownloadByName(const std::wstring& name);
+
+// ai.cpp — built-in AI via Pollinations.ai (free, no API key).
+FetchOutcome AiAsk(const std::string& promptUtf8, bool withPage);
+void UiAi(const std::wstring& args);
 
 // console_ui helpers — in-memory pages for source/info + status commands.
 void UiViewSourcePage();

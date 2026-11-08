@@ -264,6 +264,30 @@ int wmainImpl() {
             continue;
         }
 
+        if (command == "ai") {
+            std::string prompt;
+            std::getline(input, prompt);
+            prompt = Trim(prompt);
+            if (prompt.empty()) {
+                std::cout << "Usage: ai <question>   (add ' @' before the "
+                             "question to include the current page)\n";
+                continue;
+            }
+            bool withPage = prompt.rfind("@ ", 0) == 0;
+            if (withPage) prompt = Trim(prompt.substr(2));
+            const FetchOutcome out = AiAsk(prompt, withPage);
+            if (out.ok) {
+                g_currentText = out.text;
+                g_currentTitle = out.title;
+                g_currentUrl = out.finalUrl;
+                std::cout << out.text << "\n";
+            } else {
+                std::cout << "AI error: "
+                          << ToUtf8(out.error) << "\n";
+            }
+            continue;
+        }
+
         if (command == "open") {
             std::string target;
             input >> target;
@@ -360,26 +384,6 @@ int wmainImpl() {
                     wv::Show(url);
                 }
             }
-            continue;
-        }
-
-        if (command == "post") {
-            // post <url> <urlencoded-body> — debug form submissions.
-            std::string target;
-            input >> target;
-            std::string body;
-            std::getline(input, body);
-            body = Trim(body);
-            if (target.empty() || body.empty()) {
-                std::cout << "Usage: post <url> <urlencoded-body>\n";
-                continue;
-            }
-            const std::wstring url = NormalizeUrl(ToWide(target));
-            if (url.empty()) {
-                std::cout << "Invalid URL.\n";
-                continue;
-            }
-            PostPage(url, body);
             continue;
         }
 
