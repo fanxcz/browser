@@ -320,18 +320,29 @@ std::wstring JsEscape(const std::wstring& in) {
 }
 
 const wchar_t* kArticleCss = LR"CSS(
-body{background:#1c1f26;color:#d7dde6;font-family:'Segoe UI',sans-serif;
-margin:0;padding:32px 20px 80px}
-.wrap{max-width:760px;margin:0 auto}
-h1{color:#5eead4;font-size:26px;border-bottom:1px solid #30363d;
-padding-bottom:12px}
-.meta{color:#8b94a1;font-size:13px;margin-bottom:24px}
-p{line-height:1.65;margin:0 0 14px;font-size:15.5px}
-a{color:#79c0ff;text-decoration:none}
+*{box-sizing:border-box}
+body{background:#0b0e11;color:#c9d1d9;margin:0;padding:14px 18px 60px;
+font:13.5px/1.5 Consolas,'Cascadia Mono',monospace}
+.wrap{max-width:840px;margin:0 auto}
+h1{color:#58a6ff;font-size:17px;font-weight:600;margin:0 0 4px;
+border-bottom:1px solid #21262d;padding-bottom:6px}
+.meta{color:#8b949e;font-size:12px;margin-bottom:14px}
+p{margin:0 0 10px}
+a{color:#58a6ff;text-decoration:none}
 a:hover{text-decoration:underline}
-.nav{margin-top:36px;padding-top:16px;border-top:1px solid #30363d;
-font-size:14px}
-input,button{font:inherit}
+.nav{margin-top:24px;padding-top:8px;border-top:1px solid #21262d;
+font-size:12.5px}
+.res{display:block;padding:3px 8px;border-radius:4px;color:#58a6ff;
+text-decoration:none;white-space:nowrap;overflow:hidden;
+text-overflow:ellipsis}
+.res:hover{background:#161b22;text-decoration:underline}
+.res .l{color:#8b949e;font-size:11.5px;margin-left:8px}
+.langs a{margin-right:14px}
+#q{width:100%;padding:8px 10px;font:inherit;font-size:14px;
+border-radius:6px;border:1px solid #30363d;background:#0d1117;
+color:#e6edf3;outline:none}
+#q:focus{border-color:#58a6ff}
+#res{margin-top:10px}
 )CSS";
 
 fs::path ArticleHtmlPath(const WikiEntry& e) {
@@ -425,9 +436,6 @@ void RebuildPortal() {
         lp << LR"L1(<html><head><meta charset="utf-8"><title>Wikipedia )L1"
            << ToWide(lang) << LR"L2(</title><style>)L2" << kArticleCss
            << LR"L3(
-.res{display:block;padding:8px 10px;border-radius:6px;color:#79c0ff;
-text-decoration:none}
-.res:hover{background:#21262d}
 )L3" << LR"L4(</style></head><body><div class="wrap">
 <h1>Wikipedia — )L4" << ToWide(lang)
            << LR"L5(</h1><div class="meta">)L5" << mine.size()
@@ -446,15 +454,7 @@ text-decoration:none}
 
     auto out = OpenUtf8Out(root / L"index.html");
     out << LR"W1(<html><head><meta charset="utf-8"><title>Wikipedia — офлайн</title>
-<style>)W1" << kArticleCss << LR"W2(
-#q{width:100%;padding:12px 16px;font-size:16px;border-radius:8px;
-border:1px solid #30363d;background:#0d1117;color:#e6edf3;box-sizing:border-box}
-#res{margin-top:16px}
-.res{display:block;padding:8px 10px;border-radius:6px;color:#79c0ff;
-text-decoration:none}
-.res:hover{background:#21262d}
-.langs a{margin-right:14px}
-)W2" << LR"W3(</style></head><body><div class="wrap">
+<style>)W1" << kArticleCss << LR"W2()W2" << LR"W3(</style></head><body><div class="wrap">
 <h1>Wikipedia — офлайн библиотека</h1>
 <div class="meta">Статей: )W3" << entries.size()
        << LR"W4( · RU: )W4" << ru << LR"W5( · EN: )W5" << en
@@ -661,12 +661,7 @@ void OpenResultsPage(const std::wstring& query,
     auto out = OpenUtf8Out(path);
     out << LR"R1(<html><head><meta charset="utf-8"><title>Поиск: )R1"
         << HtmlEscape(query) << LR"R2(</title><style>)R2" << kArticleCss
-        << LR"R3(
-.res{display:block;padding:10px 12px;border-radius:8px;color:#79c0ff;
-text-decoration:none;margin-bottom:4px}
-.res:hover{background:#21262d}
-.res .l{color:#8b94a1;font-size:12px;margin-left:8px}
-)R3" << LR"R4(</style></head><body><div class="wrap">
+        << LR"R3()R3" << LR"R4(</style></head><body><div class="wrap">
 <h1>Поиск: )R4" << HtmlEscape(query) << LR"R5(</h1>)R5";
     if (!note.empty())
         out << L"<div class=\"meta\">" << HtmlEscape(note) << L"</div>";
