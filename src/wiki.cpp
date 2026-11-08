@@ -636,6 +636,11 @@ void WikiWorker(std::string lang, long long maxTotal) {
                 const std::wstring file = SafeFileName(title) + L".txt";
 
                 {
+                    // The lang dir may not exist yet on a fresh install —
+                    // without this the .txt write silently fails while the
+                    // index still records the article.
+                    std::error_code dirEc;
+                    fs::create_directories(WikiLangDir(lang), dirEc);
                     auto out = OpenUtf8Out(WikiLangDir(lang) / file);
                     out << title << L"\n\n" << ToWide(extract);
                 }
@@ -947,6 +952,41 @@ WikiPage ResultsPage(const std::wstring& query,
     return p;
 }
 
+// Fetch one article's plaintext extract and store it under wiki/<lang>/.
+// Heals index entries whose .txt was lost (e.g. the missing-directory bug)
+// without re-running the whole download.
+bool FetchArticleToDisk(const std::string& lang, const std::wstring& title) {
+    const std::string titleUtf8 = ToUtf8(title);
+    const std::wstring url =
+        L"https://" + ToWide(lang) +
+        L".wikipedia.org/w/api.php?action=query&format=json"
+        L"&formatversion=2&prop=extracts&explaintext=1"
+        L"&exsectionformat=plain&redirects=1&titles=" +
+        ToWide(UrlEncode(titleUtf8));
+    const std::string json = JsonRequest(url);
+    if (json.empty()) return false;
+    Json root;
+    if (!ParseJson(json, root)) return false;
+    const Json* q = root.find("query");
+    const Json* pages = q ? q->find("pages") : nullptr;
+    if (!pages || pages->type != Json::Arr || pages->arr.empty())
+        return false;
+    const Json& pg = pages->arr.front();
+    std::string extract;
+    if (const Json* ex = pg.find("extract"))
+        if (ex->type == Json::Str) extract = ex->str;
+    if (extract.empty()) return false;
+    const std::string realTitle = pg.strOf("title");
+    const std::wstring wtitle =
+        ToWide(realTitle.empty() ? titleUtf8 : realTitle);
+    const std::wstring file = SafeFileName(wtitle) + L".txt";
+    std::error_code ec;
+    fs::create_directories(WikiLangDir(lang), ec);
+    auto out = OpenUtf8Out(WikiLangDir(lang) / file);
+    out << wtitle << L"\n\n" << ToWide(extract);
+    return true;
+}
+
 } // namespace
 
 // wiki://portal | wiki://ru | wiki://en | wiki://random |
@@ -954,8 +994,11 @@ WikiPage ResultsPage(const std::wstring& query,
 FetchOutcome WikiFetchPage(const std::wstring& url) {
     FetchOutcome out;
     out.finalUrl = url;
-    std::wstring rest = url.size() > 7 ? url.substr(7) : L"";
-    rest = LowerWide(TrimWide(rest));
+    // Keep the original case for article filenames (SafeFileName preserves
+    // it); lowercase only for keyword comparisons.
+    const std::wstring restRaw = TrimWide(
+        url.size() > 7 ? url.substr(7) : L"");
+    const std::wstring rest = LowerWide(restRaw);
 
     WikiPage page;
     bool have = false;
@@ -1014,8 +1057,10 @@ FetchOutcome WikiFetchPage(const std::wstring& url) {
             page = IndexPage(lang == L"en" ? "en" : "ru");
             have = true;
         } else {
-            // Article: wiki://<lang>/<SafeFileName(title)>
-            const std::wstring fileBase = rest.substr(slash + 1);
+            // Article: wiki://<lang>/<SafeFileName(title)> — original case.
+            const size_t slashRaw = restRaw.find(L'/');
+            const std::wstring fileBase = slashRaw == std::wstring::npos
+                ? L"" : restRaw.substr(slashRaw + 1);
             const std::string langUtf8 = lang == L"en" ? "en" : "ru";
             // Fast path: txtName is always SafeFileName(title)+".txt".
             std::error_code ec;
@@ -1037,6 +1082,32 @@ FetchOutcome WikiFetchPage(const std::wstring& url) {
                 }
             }
             if (found) {
+                // Heal missing .txt files (older downloads lost them when
+                // the lang dir didn't exist): fetch this one article now.
+                const fs::path txtFile =
+                    WikiLangDir(e.lang) / e.txtName;
+                std::error_code ec;
+                if (!fs::exists(txtFile, ec)) {
+                    std::wstring title = e.title;
+                    if (title.empty()) {
+                        for (const auto& cand : *LoadIndex())
+                            if (cand.lang == e.lang &&
+                                cand.txtName == e.txtName) {
+                                title = cand.title;
+                                break;
+                            }
+                    }
+                    if (title.empty()) title = fileBase;
+                    if (!FetchArticleToDisk(e.lang, title)) {
+                        out.ok = false;
+                        out.error =
+                            L"Файл статьи отсутствует, и докачать не "
+                            L"удалось (нет сети?).";
+                        return out;
+                    }
+                    e.title = title;
+                    e.txtName = SafeFileName(title) + L".txt";
+                }
                 page = ArticlePage(e);
                 have = true;
             }

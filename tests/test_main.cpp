@@ -515,6 +515,19 @@ static void TestReaderAndWiki() {
     CHECK(portal.ok);
     CHECK(portal.title.find("Wikipedia") != std::wstring::npos);
     CHECK(!portal.links.empty());
+
+    // wiki article fast path: existing .txt renders without the index.
+    {
+        std::error_code ec;
+        const fs::path dir = DataDirPath().parent_path() /
+            L"wiki" / L"ru";
+        fs::create_directories(dir, ec);
+        std::wofstream f(dir / L"TestArticle.txt", std::ios::trunc);
+        f << L"TestArticle\n\nArticle body text for opening check.\n";
+    }
+    const FetchOutcome art = WikiFetchPage(L"wiki://ru/TestArticle");
+    CHECK(art.ok);
+    CHECK(art.text.find("Article body text") != std::wstring::npos);
 }
 
 static void TestSearchHelpers() {

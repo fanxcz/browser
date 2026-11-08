@@ -855,6 +855,10 @@ namespace console_ui {
         const int width = state.width;
         const int height = state.height;
         const bool loading = g_loadRunning.load();
+        // Bottom command line (input starts with ':') is repainted after
+        // page content so the box is not overdrawn by page lines.
+        const bool cmdLine = state.focus == Focus::Search &&
+            !state.input.empty() && state.input.front() == L':';
 
         DrawTabStrip(state); // row 0: browser tabs, always visible
         DrawSettingsButton(state); // row 1, right edge: ⚙ Настройки
@@ -877,9 +881,7 @@ namespace console_ui {
             }
             // ":cmd" input renders as a bottom command line instead of
             // the top omnibox (like Vim's command line).
-            const bool cmdLine = state.focus == Focus::Search &&
-                !state.input.empty() && state.input.front() == L':';
-            DrawSearchBox(state, cmdLine ? height - 5 : center - 2);
+            DrawSearchBox(state, cmdLine ? std::max(3, height - 5) : center - 2);
             Center(state, center + 2,
                    L"Введите запрос или адрес  ·  Enter  ·  wiki: статья  ·  :команда", kMuted);
             Center(state, center + 4,
@@ -913,9 +915,7 @@ namespace console_ui {
                 navX = DrawNavButton(state, navX, L"⌂ Домой", NavAction::Home, true, 1);
                 navX = DrawNavButton(state, navX, L"↻ Обновить", NavAction::Reload, canReload, 1);
             }
-            const bool cmdLine = state.focus == Focus::Search &&
-                !state.input.empty() && state.input.front() == L':';
-            DrawSearchBox(state, cmdLine ? height - 5 : 3);
+            DrawSearchBox(state, cmdLine ? std::max(3, height - 5) : 3);
 
             const size_t textLimit = std::min<size_t>(g_currentText.size(), MAX_DISPLAY_CHARS);
             const std::wstring pageText = ToWide(g_currentText.substr(0, textLimit));
@@ -1192,6 +1192,9 @@ namespace console_ui {
             At(state, 2, footerRow, footer, kMuted, width - 4);
         }
 
+        // Repaint the bottom command box over page content when active.
+        if (cmdLine && height >= 10)
+            DrawSearchBox(state, std::max(3, height - 5));
         // Autocomplete dropdown paints last so it overlays page content.
         DrawSuggestions(state);
         DrawSettingsMenu(state);
