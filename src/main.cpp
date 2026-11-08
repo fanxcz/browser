@@ -1,7 +1,37 @@
 #include "browser.h"
 #include "wvhost.h"
 
-int wmain() {
+#include <cstdio>
+#include <ctime>
+#include <exception>
+#include <fstream>
+
+namespace {
+
+void LogCrash(const char* what, DWORD code = 0) {
+    try {
+        std::wofstream f(DataDirPath() / L"crash.log", std::ios::app);
+        std::time_t now = std::time(nullptr);
+        std::tm tm{};
+        localtime_s(&tm, &now);
+        wchar_t ts[32];
+        swprintf_s(ts, L"%04d-%02d-%02d %02d:%02d:%02d",
+                   tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+                   tm.tm_hour, tm.tm_min, tm.tm_sec);
+        f << ts << L"  " << ToWide(what ? what : "unknown");
+        if (code) f << L"  code=0x" << std::hex << code;
+        f << L"  url=" << g_currentUrl << L'\n';
+    } catch (...) {}
+}
+
+LONG WINAPI CrashFilter(EXCEPTION_POINTERS* ep) {
+    LogCrash("unhandled exception",
+             ep && ep->ExceptionRecord
+                 ? ep->ExceptionRecord->ExceptionCode : 0);
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
+int wmainImpl() {
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);
     SetConsoleTitleW(L"Browser - Console Search");
@@ -409,4 +439,19 @@ int wmain() {
     shutdown();
     std::cout << "Browser closed.\n";
     return 0;
+}
+
+} // namespace
+
+int wmain() {
+    SetUnhandledExceptionFilter(CrashFilter);
+    try {
+        return wmainImpl();
+    } catch (const std::exception& e) {
+        LogCrash(e.what());
+        throw;
+    } catch (...) {
+        LogCrash("unknown exception");
+        throw;
+    }
 }

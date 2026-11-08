@@ -197,6 +197,7 @@ extern std::string g_currentTitle;
 extern std::string g_currentText;
 extern bool g_consoleUiMode;
 extern bool g_consolePageOpen;
+extern bool g_offline;             // last fetch failed at network level
 extern std::wstring g_consoleStatus;
 extern std::vector<Link> g_currentLinks;
 extern std::vector<PageImage> g_currentImages;
@@ -324,6 +325,8 @@ std::string DetectHtmlCharset(const std::string& html,
                               const std::wstring& contentType,
                               size_t& bomLength);
 std::string NormalizeDisplayText(const std::string& input);
+// Reader mode: strips boilerplate short lines, keeps content lines.
+std::string FilterReaderText(const std::string& input);
 ParsedPage ParseHtml5(const std::string& html, const std::wstring& url);
 
 // feeds.cpp — RSS/Atom detection and reader rendering.
@@ -451,6 +454,14 @@ void UiViewSourcePage();
 void UiPageInfoPage();
 void UiShowStats();
 void UiShowTabs();
+void UiReaderMode();
+TabViewState UiOpenInBackgroundTab(const std::wstring& url,
+                                   const TabViewState& view);
+// Startup maintenance: daily data backup + cache size eviction.
+void MaybeDailyBackup();
+void EvictCacheOverflow();
+// Exports tabs+history+bookmarks into saved/session-<ts>.txt.
+std::wstring UiExportSession();
 
 // Address-bar suggestions from history + bookmarks (cached by file mtime).
 std::vector<std::wstring> GetUrlSuggestions(const std::wstring& prefix,

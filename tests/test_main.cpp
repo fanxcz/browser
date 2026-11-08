@@ -481,6 +481,42 @@ static void TestNormalizeText() {
     CHECK(NormalizeDisplayText("") .empty());
 }
 
+static void TestReaderAndWiki() {
+    std::printf("== reader/wiki ==\n");
+
+    // Reader mode keeps long paragraphs + marker lines, drops boilerplate.
+    const std::string noisy =
+        "Home\n"
+        "Login\n"
+        "Share this article\n"
+        "■ Article Title Here\n"
+        "▎ By Author · 12 March 2024 · 5 min read\n"
+        "\x01\n"
+        "This is a reasonably long paragraph of article text that should "
+        "survive the reader-mode filter because it contains enough real "
+        "content words to be worth keeping on the page.\n"
+        "Short nav crumb\n"
+        "• First real bullet point of the article body text\n"
+        "Buy now | Subscribe | Newsletter\n"
+        "Another long paragraph that also exceeds the minimum length "
+        "threshold and therefore must be preserved by the reader filter "
+        "for comfortable reading in the console browser window today.\n";
+    const std::string clean = FilterReaderText(noisy);
+    CHECK(clean.find("Article Title Here") != std::string::npos);
+    CHECK(clean.find("reasonably long paragraph") != std::string::npos);
+    CHECK(clean.find("First real bullet") != std::string::npos);
+    CHECK(clean.find("Login") == std::string::npos);
+    CHECK(clean.find("Buy now") == std::string::npos);
+    // Empty/garbage input yields empty output (caller keeps original).
+    CHECK(FilterReaderText("Hi\nOK\n").empty());
+
+    // wiki:// portal renders even with an empty library.
+    const FetchOutcome portal = WikiFetchPage(L"wiki://portal");
+    CHECK(portal.ok);
+    CHECK(portal.title.find("Wikipedia") != std::wstring::npos);
+    CHECK(!portal.links.empty());
+}
+
 static void TestSearchHelpers() {
     std::printf("== search helpers ==\n");
 
@@ -582,6 +618,7 @@ int main() {
     TestTabs();
     TestSuggestionsAndSave();
     TestNormalizeText();
+    TestReaderAndWiki();
     TestSearchHelpers();
     TestBookmarksAndHistory();
 

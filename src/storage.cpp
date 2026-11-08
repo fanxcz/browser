@@ -3,8 +3,10 @@
 
 #include "browser.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <ctime>
+#include <unordered_map>
 #include <unordered_set>
 
 fs::path HistoryFilePath() { return DataDirPath() / L"history.txt"; }
@@ -349,6 +351,22 @@ std::vector<std::wstring> GetBookmarksCached() {
     return cache.urls;
 }
 
+// Host part of an http(s) URL without scheme, credentials, port or path.
+static std::wstring UrlHost(const std::wstring& url) {
+    std::wstring h = url;
+    const size_t scheme = h.find(L"://");
+    if (scheme != std::wstring::npos) h = h.substr(scheme + 3);
+    const size_t at = h.rfind(L'@');
+    if (at != std::wstring::npos) h = h.substr(at + 1);
+    const size_t slash = h.find_first_of(L"/?#");
+    if (slash != std::wstring::npos) h = h.substr(0, slash);
+    const size_t colon = h.rfind(L':');
+    if (colon != std::wstring::npos && h.find(L']') == std::wstring::npos)
+        h = h.substr(0, colon);
+    if (h.rfind(L"www.", 0) == 0) h = h.substr(4);
+    return LowerWide(h);
+}
+
 std::vector<std::wstring> GetUrlSuggestions(const std::wstring& prefix,
                                             size_t maxCount) {
     static CachedUrlFile historyCache;
@@ -360,20 +378,86 @@ std::vector<std::wstring> GetUrlSuggestions(const std::wstring& prefix,
     if (needle.size() < 2)
         return {};
 
+    // Top domains by visit count, rebuilt only when history changes.
+    // Powers both domain-level matches ("github" → github.com) and the
+    // "frequent site" boost for full-URL matches.
+    static fs::file_time_type freqStamp{};
+    static bool freqValid = false;
+    static std::vector<std::pair<int, std::wstring>> topDomains;
+    static std::unordered_map<std::wstring, int> domainRank;
+    if (!freqValid || freqStamp != historyCache.mtime) {
+        freqStamp = historyCache.mtime;
+        freqValid = true;
+        std::unordered_map<std::wstring, int> freq;
+        std::unordered_map<std::wstring, std::wstring> rep;
+        for (const auto& u : historyCache.urls) {
+            const std::wstring host = UrlHost(u);
+            if (host.empty()) continue;
+            ++freq[host];
+            if (!rep.count(host)) rep[host] = u;
+        }
+        topDomains.clear();
+        domainRank.clear();
+        for (const auto& kv : freq)
+            topDomains.push_back({kv.second, kv.first});
+        std::sort(topDomains.begin(), topDomains.end(),
+                  [](const auto& a, const auto& b) {
+                      return a.first != b.first
+                                 ? a.first > b.first : a.second < b.second;
+                  });
+        if (topDomains.size() > 100) topDomains.resize(100);
+        for (size_t i = 0; i < topDomains.size(); ++i)
+            domainRank[topDomains[i].second] = static_cast<int>(i);
+    }
+
     std::vector<std::wstring> result;
     std::unordered_set<std::wstring> seen;
     auto tryAdd = [&](const std::wstring& url) {
         if (result.size() >= maxCount) return;
-        if (seen.insert(url).second &&
-            LowerWide(url).find(needle) != std::wstring::npos)
+        if (seen.insert(url).second)
             result.push_back(url);
     };
+    auto urlMatches = [&](const std::wstring& url) {
+        const std::wstring low = LowerWide(url);
+        if (low.find(needle) != std::wstring::npos) return true;
+        // Domain-level match: typing "git" suggests github.com pages.
+        const std::wstring host = UrlHost(url);
+        return !host.empty() && host.find(needle) != std::wstring::npos;
+    };
 
-    // Bookmarks first (explicit user choice), then history newest-first.
+    // Pass 1: bookmarks and history entries whose URL contains the needle.
     for (const auto& url : bookmarkCache.urls)
-        tryAdd(url);
+        if (urlMatches(url)) tryAdd(url);
     for (auto it = historyCache.urls.rbegin();
          it != historyCache.urls.rend(); ++it)
-        tryAdd(*it);
+        if (urlMatches(*it)) tryAdd(*it);
+
+    // Pass 2: top domains matching the needle — suggest the domain's most
+    // recent URL even if the full URL itself doesn't contain the text.
+    for (const auto& kv : topDomains) {
+        if (result.size() >= maxCount) break;
+        if (kv.second.find(needle) == std::wstring::npos) continue;
+        const auto repIt = std::find_if(
+            historyCache.urls.rbegin(), historyCache.urls.rend(),
+            [&](const std::wstring& u) { return UrlHost(u) == kv.second; });
+        if (repIt != historyCache.urls.rend())
+            tryAdd(*repIt);
+    }
+
+    // Re-rank: bookmarks keep priority; within the rest, more-visited
+    // domains float up (stable sort keeps recency order otherwise).
+    if (result.size() > 1) {
+        std::stable_sort(result.begin() +
+                             std::min<size_t>(result.size(),
+                                 bookmarkCache.urls.size()),
+                         result.end(),
+                         [&](const std::wstring& a, const std::wstring& b) {
+            const auto ra = domainRank.find(UrlHost(a));
+            const auto rb = domainRank.find(UrlHost(b));
+            const int rankA = ra == domainRank.end() ? 1000 : ra->second;
+            const int rankB = rb == domainRank.end() ? 1000 : rb->second;
+            return rankA != rankB ? rankA < rankB : false;
+        });
+    }
     return result;
 }

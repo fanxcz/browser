@@ -6,6 +6,7 @@
 #include "browser.h"
 #include "wvhost.h"
 
+#include <algorithm>
 #include <atomic>
 #include <codecvt>
 #include <cstring>
@@ -15,8 +16,11 @@
 #include <memory>
 #include <mutex>
 #include <random>
+#include <set>
 #include <sstream>
 #include <thread>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace {
 
@@ -662,14 +666,77 @@ void WikiWorker(std::string lang, long long maxTotal) {
 // Search + open
 // ---------------------------------------------------------------------------
 
+// Trigram index over lowered titles, rebuilt only when the index snapshot
+// changes. Queries of 3+ chars intersect posting lists instead of scanning
+// every title; shorter queries fall back to a linear scan.
+struct WikiTitleIndex {
+    const std::vector<WikiEntry>* key = nullptr;
+    std::vector<std::wstring> lowered;
+    std::unordered_map<std::wstring, std::vector<uint32_t>> grams;
+};
+std::mutex g_titleMutex;
+WikiTitleIndex g_titleIndex;
+
+const WikiTitleIndex& GetTitleIndex(const std::vector<WikiEntry>& entries) {
+    std::lock_guard<std::mutex> lock(g_titleMutex);
+    if (g_titleIndex.key == &entries) return g_titleIndex;
+    WikiTitleIndex fresh;
+    fresh.key = &entries;
+    fresh.lowered.reserve(entries.size());
+    fresh.grams.reserve(entries.size() * 8);
+    for (uint32_t i = 0; i < entries.size(); ++i) {
+        const std::wstring low = LowerWide(entries[i].title);
+        fresh.lowered.push_back(low);
+        if (low.size() < 3) continue;
+        std::unordered_set<std::wstring> seen;
+        for (size_t j = 0; j + 3 <= low.size(); ++j) {
+            const std::wstring g = low.substr(j, 3);
+            if (seen.insert(g).second)
+                fresh.grams[g].push_back(i);
+        }
+    }
+    g_titleIndex = std::move(fresh);
+    return g_titleIndex;
+}
+
 std::vector<WikiEntry> SearchTitles(const std::wstring& query,
                                     size_t limit = 50) {
     const std::wstring q = LowerWide(query);
     std::vector<WikiEntry> out;
     if (q.empty()) return out;
-    for (const auto& e : *LoadIndex()) {
-        if (LowerWide(e.title).find(q) != std::wstring::npos) {
-            out.push_back(e);
+    const auto entries = LoadIndex();
+    const WikiTitleIndex& idx = GetTitleIndex(*entries);
+
+    if (q.size() >= 3 && idx.grams.size() > entries->size() / 4) {
+        // Intersect posting lists of the query's trigrams.
+        std::vector<uint32_t> candidates;
+        bool first = true;
+        for (size_t j = 0; j + 3 <= q.size() && candidates.size() < 4096;
+             ++j) {
+            const auto it = idx.grams.find(q.substr(j, 3));
+            if (it == idx.grams.end()) return out; // impossible match
+            if (first) { candidates = it->second; first = false; }
+            else {
+                std::vector<uint32_t> next;
+                std::set_intersection(candidates.begin(), candidates.end(),
+                                      it->second.begin(), it->second.end(),
+                                      std::back_inserter(next));
+                candidates = std::move(next);
+                if (candidates.empty()) return out;
+            }
+        }
+        for (uint32_t i : candidates) {
+            if (idx.lowered[i].find(q) != std::wstring::npos) {
+                out.push_back((*entries)[i]);
+                if (out.size() >= limit) break;
+            }
+        }
+        return out;
+    }
+
+    for (size_t i = 0; i < entries->size(); ++i) {
+        if (idx.lowered[i].find(q) != std::wstring::npos) {
+            out.push_back((*entries)[i]);
             if (out.size() >= limit) break;
         }
     }
@@ -774,6 +841,18 @@ WikiPage PortalPage() {
     p.links.push_back({ToUtf8(L"English Wikipedia — index"),
                        L"wiki://en"});
     p.links.push_back({ToUtf8(L"Случайная статья"), L"wiki://random"});
+    // Article of the day — deterministic pick by calendar day.
+    if (!entries->empty()) {
+        std::time_t now = std::time(nullptr);
+        std::tm tm{};
+        localtime_s(&tm, &now);
+        const WikiEntry& day =
+            (*entries)[static_cast<size_t>(tm.tm_yday) % entries->size()];
+        p.body += L"\x01\n";
+        p.links.push_back({ToUtf8(L"Статья дня — " + day.title +
+                                  L"  ·  " + ToWide(day.lang)),
+                           ArticleConsoleUrl(day)});
+    }
     return p;
 }
 
@@ -835,6 +914,16 @@ WikiPage ArticlePage(WikiEntry e) {
     p.links.push_back({ToUtf8(L"Искать «" + title + L"»"),
                        L"wiki://search/" +
                        ToWide(UrlEncode(ToUtf8(title)))});
+    // Cross-language link: same title in the other wiki (exact match).
+    const std::wstring other = e.lang == "ru" ? L"en" : L"ru";
+    for (const auto& cand : *LoadIndex()) {
+        if (cand.lang == ToUtf8(other) && cand.title == e.title) {
+            p.links.push_back({ToUtf8(L"Также на " + other + L": " +
+                                      cand.title),
+                               ArticleConsoleUrl(cand)});
+            break;
+        }
+    }
     return p;
 }
 

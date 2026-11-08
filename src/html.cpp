@@ -393,6 +393,73 @@ std::string NormalizeDisplayText(const std::string& input) {
     return output;
 }
 
+static size_t Utf8Len(const std::string& s);
+
+// Reader mode: keep only lines that look like real content — long
+// paragraphs, headings, list items and table rows — dropping nav crumbs,
+// buttons, share widgets and other boilerplate short lines.
+std::string FilterReaderText(const std::string& input) {
+    std::vector<std::string> lines;
+    size_t start = 0;
+    while (start < input.size()) {
+        const size_t nl = input.find('\n', start);
+        if (nl == std::string::npos) {
+            lines.push_back(input.substr(start));
+            break;
+        }
+        lines.push_back(input.substr(start, nl - start));
+        start = nl + 1;
+    }
+
+    std::string out;
+    out.reserve(input.size() / 2);
+    bool prevHeading = false;
+    bool pendingBlank = false;
+    size_t kept = 0;
+    auto flushBlank = [&]() {
+        if (pendingBlank && !out.empty() && out.back() != '\n')
+            out += '\n';
+        pendingBlank = false;
+    };
+    for (const std::string& raw : lines) {
+        if (!raw.empty() && raw[0] == '\x01') {
+            // \x01 verbatim line: lone marker = blank, otherwise <pre>.
+            if (raw.size() <= 1) { pendingBlank = true; continue; }
+            if (Utf8Len(raw.substr(1)) >= 20) {
+                flushBlank();
+                out += raw;
+                out += '\n';
+                ++kept;
+            }
+            prevHeading = false;
+            continue;
+        }
+        if (raw.empty()) { pendingBlank = true; continue; }
+        const size_t len = Utf8Len(raw);
+        bool keep = false;
+        if (static_cast<unsigned char>(raw[0]) == 0xE2)
+            keep = len >= 8;                    // ■ • ◦ ▪ ▎ markers
+        else if (len >= 60)
+            keep = true;                        // real paragraph
+        else if (len >= 32 && prevHeading)
+            keep = true;                        // intro after a heading
+        else if (len >= 50 && raw.find(" | ") != std::string::npos)
+            keep = true;                        // wide table row
+        // Drop bare URLs (link dumps, share targets).
+        if (keep && raw.rfind("http", 0) == 0 &&
+            raw.find(' ') == std::string::npos)
+            keep = false;
+        prevHeading = raw.rfind("\xE2\x96\xA0", 0) == 0; // starts with ■
+        if (!keep) continue;
+        flushBlank();
+        out += raw;
+        out += '\n';
+        ++kept;
+    }
+    while (!out.empty() && out.back() == '\n') out.pop_back();
+    return kept ? out : std::string();
+}
+
 // Count UTF-8 codepoints (console cells ≈ codepoints for our fonts).
 static size_t Utf8Len(const std::string& s) {
     size_t n = 0;

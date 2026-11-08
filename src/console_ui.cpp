@@ -49,14 +49,138 @@ namespace console_ui {
             for (WORD* c : fg) *c &= static_cast<WORD>(~kLightBg);
     }
 
-    void LoadThemeSetting() {
-        std::wifstream in(DataDirPath() / L"settings.txt");
-        std::wstring line;
-        while (std::getline(in, line)) {
-            if (line == L"theme=light") { g_lightTheme = true; break; }
-            if (line == L"theme=dark")  { g_lightTheme = false; break; }
+    // ---- Theme packs -------------------------------------------------------
+    // Built-ins first, then data/themes/*.json:
+    //   {"name":"Ocean","mode":"dark","accent":"#58a6ff",
+    //    "density":"compact|normal|spacious"}
+    struct ThemePack {
+        std::wstring name;
+        bool light = false;
+        WORD accent = 0;   // 0 = palette default
+        int density = 1;   // 0 compact, 1 normal, 2 spacious
+    };
+    std::vector<ThemePack> g_themes;
+    size_t g_themeIndex = 0;
+    int g_density = 1;
+
+    // Map #RRGGBB to the nearest of the 16 console colors.
+    WORD ConsoleColorFromHex(const std::string& hex) {
+        if (hex.size() != 7 || hex[0] != '#') return 0;
+        auto hv = [](char c) -> int {
+            if (c >= '0' && c <= '9') return c - '0';
+            if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+            if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+            return -1;
+        };
+        const int r = hv(hex[1]) * 16 + hv(hex[2]);
+        const int g = hv(hex[3]) * 16 + hv(hex[4]);
+        const int b = hv(hex[5]) * 16 + hv(hex[6]);
+        if (r < 0 || g < 0 || b < 0) return 0;
+        // Standard EGA-ish palette used by conhost.
+        static const WORD kCols[16] = {
+            0, FOREGROUND_BLUE, FOREGROUND_GREEN,
+            FOREGROUND_BLUE | FOREGROUND_GREEN,
+            FOREGROUND_RED, FOREGROUND_RED | FOREGROUND_BLUE,
+            FOREGROUND_RED | FOREGROUND_GREEN,
+            FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE,
+            FOREGROUND_INTENSITY,
+            FOREGROUND_BLUE | FOREGROUND_INTENSITY,
+            FOREGROUND_GREEN | FOREGROUND_INTENSITY,
+            FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_INTENSITY,
+            FOREGROUND_RED | FOREGROUND_INTENSITY,
+            FOREGROUND_RED | FOREGROUND_BLUE | FOREGROUND_INTENSITY,
+            FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY,
+            FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE |
+                FOREGROUND_INTENSITY };
+        static const int kRgb[16][3] = {
+            {0,0,0},{0,0,128},{0,128,0},{0,128,128},
+            {128,0,0},{128,0,128},{128,128,0},{192,192,192},
+            {128,128,128},{0,0,255},{0,255,0},{0,255,255},
+            {255,0,0},{255,0,255},{255,255,0},{255,255,255} };
+        int best = 7, bestD = INT32_MAX;
+        for (int i = 0; i < 16; ++i) {
+            const int dr = r - kRgb[i][0], dg = g - kRgb[i][1],
+                      db = b - kRgb[i][2];
+            const int d = dr * dr + dg * dg + db * db;
+            if (d < bestD) { bestD = d; best = i; }
         }
+        return kCols[best];
+    }
+
+    // Tiny JSON field reader — enough for our flat theme files.
+    std::string JsonString(const std::string& js, const char* key) {
+        const std::string pat = std::string("\"") + key + "\"";
+        const size_t p = js.find(pat);
+        if (p == std::string::npos) return {};
+        const size_t colon = js.find(':', p + pat.size());
+        const size_t q1 = js.find('"', colon + 1);
+        if (q1 == std::string::npos) return {};
+        const size_t q2 = js.find('"', q1 + 1);
+        if (q2 == std::string::npos) return {};
+        return js.substr(q1 + 1, q2 - q1 - 1);
+    }
+
+    void LoadThemePacks() {
+        g_themes.clear();
+        g_themes.push_back({L"Тёмная", false, 0, 1});
+        g_themes.push_back({L"Светлая", true, 0, 1});
+        std::error_code ec;
+        const fs::path dir = DataDirPath() / L"themes";
+        if (fs::exists(dir, ec)) {
+            for (const auto& e :
+                 fs::directory_iterator(dir, ec)) {
+                if (e.path().extension() != L".json") continue;
+                std::ifstream in(e.path(), std::ios::binary);
+                std::string js((std::istreambuf_iterator<char>(in)),
+                               std::istreambuf_iterator<char>());
+                ThemePack p;
+                p.name = ToWide(JsonString(js, "name"));
+                if (p.name.empty())
+                    p.name = ToWide(e.path().stem().string());
+                const std::string mode = JsonString(js, "mode");
+                p.light = mode == "light";
+                p.accent = ConsoleColorFromHex(JsonString(js, "accent"));
+                const std::string den = JsonString(js, "density");
+                p.density = den == "compact" ? 0
+                            : den == "spacious" ? 2 : 1;
+                g_themes.push_back(std::move(p));
+            }
+        }
+        if (g_themes.empty())
+            g_themes.push_back({L"Тёмная", false, 0, 1});
+    }
+
+    void ApplyTheme(size_t index) {
+        if (g_themes.empty()) return;
+        g_themeIndex = index % g_themes.size();
+        const ThemePack& p = g_themes[g_themeIndex];
+        g_lightTheme = p.light;
         ApplyPalette();
+        if (p.accent && !p.light) kAccent = p.accent;
+        g_density = p.density;
+    }
+
+    void LoadThemeSetting() {
+        std::wstring wanted = L"dark";
+        {
+            std::wifstream in(DataDirPath() / L"settings.txt");
+            std::wstring line;
+            while (std::getline(in, line)) {
+                if (line.rfind(L"theme=", 0) == 0) {
+                    wanted = line.substr(6);
+                    break;
+                }
+            }
+        }
+        for (size_t i = 0; i < g_themes.size(); ++i) {
+            const std::string nm = ToUtf8(g_themes[i].name);
+            if (wanted == L"light" && g_themes[i].light &&
+                g_themes[i].accent == 0) { ApplyTheme(i); return; }
+            if (wanted == L"dark" && !g_themes[i].light &&
+                g_themes[i].accent == 0) { ApplyTheme(i); return; }
+            if (ToWide(nm) == wanted) { ApplyTheme(i); return; }
+        }
+        ApplyTheme(0);
     }
 
     void SaveThemeSetting() {
@@ -68,7 +192,8 @@ namespace console_ui {
             while (std::getline(in, line))
                 if (line.rfind(L"theme=", 0) != 0) lines.push_back(line);
         }
-        lines.push_back(g_lightTheme ? L"theme=light" : L"theme=dark");
+        const std::string nm = ToUtf8(g_themes[g_themeIndex].name);
+        lines.push_back(L"theme=" + ToWide(nm));
         std::wofstream out(DataDirPath() / L"settings.txt",
                            std::ios::trunc);
         for (const auto& l : lines) out << l << L'\n';
@@ -697,7 +822,27 @@ namespace console_ui {
             state.suggestSource = state.input;
             state.suggestIndex = -1; // input changed: drop stale highlight
         }
-        if (state.focus == Focus::Search && !state.findMode &&
+        // ":" prefix → command autocomplete (like Vim's command line).
+        if (!state.input.empty() && state.input.front() == L':' &&
+            state.input.size() >= 2) {
+            static const wchar_t* kCommands[] = {
+                L"back", L"forward", L"reload", L"home", L"history",
+                L"bookmarks", L"downloads", L"download", L"stats", L"tabs",
+                L"copy", L"source", L"info", L"reader", L"backup",
+                L"bookmark", L"clear-history", L"export", L"import",
+                L"bookmarks-clear", L"cache-clear", L"edge", L"web",
+                L"wiki", L"sync", L"stop", L"pause", L"exit" };
+            const std::wstring needle = LowerWide(state.input.substr(1));
+            state.suggestions.clear();
+            for (const wchar_t* cmd : kCommands) {
+                if (state.suggestions.size() >= 8) break;
+                if (LowerWide(cmd).find(needle) == 0)
+                    state.suggestions.push_back(cmd);
+            }
+            if (state.suggestIndex >=
+                static_cast<int>(state.suggestions.size()))
+                state.suggestIndex = -1;
+        } else if (state.focus == Focus::Search && !state.findMode &&
             state.editingField < 0 && state.input.size() >= 2)
             state.suggestions = GetUrlSuggestions(state.input, 8);
         if (state.suggestIndex >=
@@ -728,7 +873,7 @@ namespace console_ui {
             }
             DrawSearchBox(state, center - 2);
             Center(state, center + 2,
-                   L"Введите запрос или адрес сайта  ·  Enter", kMuted);
+                   L"Введите запрос или адрес  ·  Enter  ·  wiki: статья  ·  :команда", kMuted);
             Center(state, center + 4,
                    L"Ctrl+H — история   Ctrl+F — найти   j/k — ссылки   Enter — открыть   o — адрес", kMuted);
             DrawHomeBookmarks(state, center + 6);
@@ -1005,11 +1150,29 @@ namespace console_ui {
                 const size_t maxOff = state.pageLineCount - cap;
                 const int pct = maxOff
                     ? static_cast<int>(state.scrollOffset * 100 / maxOff) : 0;
-                const std::wstring ind = L"стр " +
-                    std::to_wstring(cur) + L"/" + std::to_wstring(pages) +
-                    L" · " + std::to_wstring(pct) + L"%";
+                // Extras: link count always; feed item count when the page
+                // is an RSS/Atom document; offline flag when the last fetch
+                // failed at network level.
+                std::wstring ind;
+                if (g_offline) ind += L"офлайн · ";
+                ind += L"стр " + std::to_wstring(cur) + L"/" +
+                    std::to_wstring(pages) + L" · " +
+                    std::to_wstring(pct) + L"% · " +
+                    std::to_wstring(g_currentLinks.size()) + L" сс.";
+                const std::string& h = g_currentHtml;
+                if (h.size() > 5 && h[0] == '<' &&
+                    (h.find("<rss") != std::string::npos ||
+                     h.find("<feed") != std::string::npos ||
+                     h.find("rdf:RDF") != std::string::npos)) {
+                    size_t items = 0;
+                    for (size_t i = 0; i + 2 < pageText.size(); ++i)
+                        if (pageText[i] == L'\n' && pageText[i + 1] == L'•')
+                            ++items;
+                    if (pageText.rfind(L"•", 0) == 0) ++items;
+                    ind += L" · лента: " + std::to_wstring(items);
+                }
                 At(state, width - static_cast<int>(ind.size()) - 2,
-                   height - 3, ind, kMuted);
+                   height - 3, ind, g_offline ? kAccent : kMuted);
             }
             const std::wstring footer = width >= 100
                 ? L"j/k — ссылки/поля   Enter — открыть   Ctrl+Enter — форма   o — адрес   / — найти   b/f — история   g/G — края   Пробел — листать   Ctrl+T/W — вкладки"
@@ -1297,11 +1460,9 @@ namespace console_ui {
     void Submit(State& state);
 
     void ToggleTheme() {
-        g_lightTheme = !g_lightTheme;
-        ApplyPalette();
+        ApplyTheme(g_themeIndex + 1);
         SaveThemeSetting();
-        g_consoleStatus = g_lightTheme
-            ? L"Светлая тема." : L"Тёмная тема.";
+        g_consoleStatus = L"Тема: " + g_themes[g_themeIndex].name;
     }
 
     void PageFocusReset(State& state) {
@@ -1399,6 +1560,16 @@ namespace console_ui {
         state.findPos = pos + needle.size();
         if (state.findPos >= haystack.size())
             state.findPos = 0;
+
+        // Scroll so the match is roughly centered — count newlines before
+        // the hit as an approximation of the display row (wrapped lines
+        // make it approximate, but it lands near the match).
+        size_t lineIdx = 0;
+        for (size_t i = 0; i < pos; ++i)
+            if (haystack[i] == L'\n') ++lineIdx;
+        const size_t cap = state.pageCapacity > 0
+            ? static_cast<size_t>(state.pageCapacity) : 20;
+        state.scrollOffset = lineIdx > cap / 2 ? lineIdx - cap / 2 : 0;
 
         // Count total occurrences for the status line.
         size_t count = 0;
@@ -1620,6 +1791,15 @@ namespace console_ui {
         }
         if (lower == L"source") { UiViewSourcePage(); return; }
         if (lower == L"info") { UiPageInfoPage(); return; }
+        if (lower == L"reader") { UiReaderMode(); return; }
+        if (lower == L"backup") { MaybeDailyBackup(); g_consoleStatus = L"Резервная копия данных создана."; return; }
+        if (lower == L"session") { UiExportSession(); return; }
+        // wiki:<запрос> — shorthand for the wiki command.
+        if (lower.rfind(L"wiki:", 0) == 0) {
+            UiWiki(TrimWide(value.substr(5)));
+            state.focus = Focus::Page;
+            return;
+        }
         if (lower.rfind(L"search ", 0) == 0) {
             value = TrimWide(value.substr(7));
         } else if (lower.rfind(L"open ", 0) == 0) {
@@ -1838,6 +2018,29 @@ namespace console_ui {
         }
         if (alt && code == VK_LEFT) { ActivateAction(state, NavAction::Back); return; }
         if (alt && code == VK_RIGHT) { ActivateAction(state, NavAction::Forward); return; }
+        if (alt && code == VK_HOME) { ActivateAction(state, NavAction::Home); return; }
+        // Ctrl+PgUp/PgDn — previous/next tab (plain PgUp/PgDn scrolls).
+        if (ctrl && (code == VK_PRIOR || code == VK_NEXT)) {
+            ApplyView(state, UiCycleTab(code == VK_PRIOR ? -1 : 1,
+                                        CurrentView(state)));
+            return;
+        }
+        // Ctrl+E — focus the address bar pre-filled with the selected
+        // link's URL (or the page URL), ready to edit.
+        if (ctrl && !shift && code == 'E') {
+            state.focus = Focus::Search;
+            state.findMode = false;
+            state.browsingHistory = false;
+            if (state.selectedItem >= 0 &&
+                static_cast<size_t>(state.selectedItem) < g_currentLinks.size())
+                state.input = g_currentLinks[
+                    static_cast<size_t>(state.selectedItem)].url;
+            else
+                state.input = g_currentUrl;
+            state.caret = state.input.size();
+            state.inputViewStart = 0;
+            return;
+        }
         if (code == VK_BROWSER_BACK) { ActivateAction(state, NavAction::Back); return; }
         if (code == VK_BROWSER_FORWARD) { ActivateAction(state, NavAction::Forward); return; }
         if (code == VK_F6) {
@@ -1978,7 +2181,7 @@ namespace console_ui {
                 return;
             }
         }
-        if (code == VK_NEXT || code == VK_PRIOR) {
+        if (!ctrl && (code == VK_NEXT || code == VK_PRIOR)) {
             const size_t step = static_cast<size_t>(std::max(1, state.pageCapacity - 2));
             const size_t maxOffset = state.pageLineCount > static_cast<size_t>(state.pageCapacity)
                 ? state.pageLineCount - static_cast<size_t>(state.pageCapacity) : 0;
@@ -2047,6 +2250,26 @@ namespace console_ui {
                 } else {
                     g_consoleStatus = L"На странице нет текста для поиска.";
                 }
+                return;
+            }
+            // B (shift+b) — open the selected link in a background tab.
+            if (ch == L'B' && state.selectedItem >= 0) {
+                std::wstring target;
+                if (static_cast<size_t>(state.selectedItem) <
+                    g_currentLinks.size())
+                    target = g_currentLinks[
+                        static_cast<size_t>(state.selectedItem)].url;
+                else {
+                    const int img = ImageIndexForItem(state,
+                        state.selectedItem);
+                    if (img >= 0)
+                        target = g_currentImages[
+                            static_cast<size_t>(img)].url;
+                }
+                if (!target.empty() &&
+                    target.rfind(L"openfile://", 0) != 0)
+                    ApplyView(state, UiOpenInBackgroundTab(target,
+                                                          CurrentView(state)));
                 return;
             }
             if (lowerCh == L'b') { ActivateAction(state, NavAction::Back); return; }
@@ -2208,6 +2431,7 @@ namespace console_ui {
                 state.scrollOffset = 0; state.focus = Focus::Page;
                 return;
             }
+            if (lowerCh == L'm') { UiReaderMode(); return; }
             if (lowerCh == L's') { UiSavePage(); return; }
             if (lowerCh == L'a') { UiBookmark(); return; }
             if (lowerCh == L'c') { // copy selected link/image URL, else page URL
@@ -2315,7 +2539,9 @@ namespace console_ui {
                 return;
             }
             const size_t notches = static_cast<size_t>(std::max(1, std::abs(static_cast<int>(delta)) / WHEEL_DELTA));
-            const size_t step = notches * 3;
+            // Density: compact scrolls further per notch, spacious less.
+            const size_t step = notches *
+                (g_density == 0 ? 5 : g_density == 2 ? 2 : 3);
             const size_t maxOffset = state.pageLineCount > static_cast<size_t>(state.pageCapacity)
                 ? state.pageLineCount - static_cast<size_t>(state.pageCapacity) : 0;
             if (delta > 0)
@@ -2538,7 +2764,13 @@ namespace console_ui {
         if (!SetConsoleMode(state.inputHandle, newMode)) return false;
 
         g_consoleUiMode = true;
+        LoadThemePacks();
         LoadThemeSetting();
+        // Maintenance: once-a-day data backup + cache size cap.
+        std::thread([] {
+            try { MaybeDailyBackup(); EvictCacheOverflow(); }
+            catch (...) {}
+        }).detach();
         state.focus = Focus::Search;
         state.historyIndex = 0;
         bool running = true;

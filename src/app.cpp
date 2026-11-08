@@ -69,6 +69,7 @@ bool g_consolePageOpen = false;
 int g_refreshSeconds = 0;
 std::string g_refreshUrl;
 std::wstring g_consoleStatus;
+bool g_offline = false;
 std::vector<Link> g_currentLinks;
 std::vector<PageImage> g_currentImages;
 std::vector<FormField> g_currentFields;
@@ -1344,12 +1345,18 @@ void QueueOrStart(const LoadJob& job) {
     g_consoleStatus = L"Загрузка…";
 }
 
+static void MaybeAutoPrefetch(const LoadJob& job,
+                              const FetchOutcome& outcome);
+
 void ApplyResult(const LoadResult& result) {
     const LoadJob& job = result.job;
     if (!result.ok) {
+        // No HTTP status at all → the request never reached the server.
+        g_offline = result.outcome.status == 0;
         g_consoleStatus = result.statusText;
         return;
     }
+    g_offline = false;
 
     EnsureTabs();
     const size_t ti = job.tabIndex < g_tabs.size()
@@ -1404,6 +1411,7 @@ void ApplyResult(const LoadResult& result) {
     if (result.outcome.title == "Unsupported content")
         g_consoleStatus = L"Этот файл нельзя показать в консоли — "
                           L"нажмите d, чтобы скачать его.";
+    MaybeAutoPrefetch(job, result.outcome);
 }
 
 // Build an in-memory "page" for history / bookmarks.
@@ -1453,6 +1461,32 @@ void CommitInternalPage(const std::wstring& kind) {
     g_currentFields.clear();
     g_currentForms.clear();
     g_consolePageOpen = true;
+}
+
+// Fire-and-forget prefetch of the first few links after a page load.
+// Uses the same Request() path as the manual prefetch command.
+static void AutoPrefetchWorker(std::vector<std::wstring> urls) {
+    for (const auto& u : urls) {
+        try { Request(u, CacheMode::Use, nullptr); }
+        catch (...) {}
+    }
+}
+
+static void MaybeAutoPrefetch(const LoadJob& job,
+                              const FetchOutcome& outcome) {
+    if (!g_consoleUiMode || !job.addToNavigation ||
+        job.kind != LoadJob::Kind::Url || !outcome.ok)
+        return;
+    std::vector<std::wstring> urls;
+    for (const auto& link : outcome.links) {
+        const std::wstring lu = LowerWide(link.url);
+        if (lu.rfind(L"http://", 0) == 0 ||
+            lu.rfind(L"https://", 0) == 0)
+            urls.push_back(link.url);
+        if (urls.size() >= 4) break;
+    }
+    if (urls.empty()) return;
+    std::thread(AutoPrefetchWorker, std::move(urls)).detach();
 }
 
 } // namespace
@@ -1550,6 +1584,153 @@ void UiShowStats() {
         L" · загрузок: " + std::to_wstring(dlFiles) +
         L" · вкладок: " + std::to_wstring(UiTabCount()) +
         L" · скачано: " + FmtBytes(g_downloadedBytes.load());
+}
+
+void UiReaderMode() {
+    if (!g_consolePageOpen || g_currentText.empty() ||
+        IsInternalPageUrl(g_currentUrl)) {
+        g_consoleStatus = L"Режим чтения доступен только для обычных страниц.";
+        return;
+    }
+    const std::string filtered = FilterReaderText(g_currentText);
+    if (filtered.empty() || filtered.size() > g_currentText.size() * 9 / 10) {
+        g_consoleStatus = L"На странице почти нет лишнего — фильтровать нечего.";
+        return;
+    }
+    const std::string source = g_currentHtml;
+    const std::vector<Link> links = g_currentLinks;
+    g_currentTitle = "Чтение — " + g_currentTitle;
+    g_currentText = NormalizeDisplayText(filtered);
+    g_currentHtml = source; // keep source for view-source (u)
+    g_currentLinks = links;
+    g_consoleStatus = L"Режим чтения: показан основной текст.";
+}
+
+TabViewState UiOpenInBackgroundTab(const std::wstring& rawUrl,
+                                   const TabViewState& view) {
+    const bool wiki = IsWikiPageUrl(rawUrl);
+    const std::wstring url = wiki ? rawUrl : NormalizeUrl(rawUrl);
+    if (url.empty()) {
+        g_consoleStatus = L"Некорректный адрес сайта.";
+        return view;
+    }
+    EnsureTabs();
+    if (g_tabs.size() >= MAX_TABS) {
+        g_consoleStatus = L"Слишком много вкладок (максимум " +
+            std::to_wstring(MAX_TABS) + L").";
+        return view;
+    }
+    // New tab at the end; the current tab/view stays untouched and the
+    // load commits into the background tab's slot on completion.
+    g_tabs.emplace_back();
+    const size_t newIndex = g_tabs.size() - 1;
+    LoadJob job;
+    job.kind = wiki ? LoadJob::Kind::Internal : LoadJob::Kind::Url;
+    job.url = url;
+    job.mode = wiki ? CacheMode::Bypass : CacheMode::Use;
+    job.addToNavigation = true;
+    job.recordVisit = true;
+    job.tabIndex = newIndex;
+    QueueOrStart(job);
+    g_consoleStatus = L"Открыто в фоновой вкладке " +
+        std::to_wstring(newIndex + 1) + L".";
+    return view;
+}
+
+// Copy the persistent data files into data/backups/<date>/ once a day.
+void MaybeDailyBackup() {
+    static const char* kFiles[] = {
+        "history.txt", "bookmarks.txt", "tabs.txt", "settings.txt" };
+    const fs::path dir = DataDirPath();
+    std::error_code ec;
+    const std::time_t now = std::time(nullptr);
+    std::tm tm{};
+    localtime_s(&tm, &now);
+    wchar_t date[16];
+    swprintf_s(date, L"%04d-%02d-%02d",
+               tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
+    const fs::path marker = dir / L"backups" / L"last.txt";
+    {
+        std::wifstream in(marker);
+        std::wstring last;
+        std::getline(in, last);
+        if (last == date) return; // already backed up today
+    }
+    const fs::path dest = dir / L"backups" / date;
+    fs::create_directories(dest, ec);
+    for (const char* name : kFiles) {
+        const fs::path src = dir / ToWide(name);
+        if (fs::exists(src, ec))
+            fs::copy_file(src, dest / ToWide(name),
+                          fs::copy_options::overwrite_existing, ec);
+    }
+    std::wofstream out(marker, std::ios::trunc);
+    out << date << L'\n';
+}
+
+// Bound the cache: delete oldest files until under ~500 MB.
+void EvictCacheOverflow() {
+    const uint64_t kMaxBytes = 500ULL * 1024 * 1024;
+    const fs::path root = CacheDirPath();
+    std::error_code ec;
+    if (!fs::exists(root, ec)) return;
+    struct F { fs::path p; std::filesystem::file_time_type t; uint64_t sz; };
+    std::vector<F> files;
+    uint64_t total = 0;
+    for (const auto& e : fs::recursive_directory_iterator(
+             root, fs::directory_options::skip_permission_denied, ec)) {
+        if (!e.is_regular_file(ec)) continue;
+        const uint64_t sz = e.file_size(ec);
+        files.push_back({e.path(), e.last_write_time(ec), sz});
+        total += sz;
+    }
+    if (total <= kMaxBytes) return;
+    std::sort(files.begin(), files.end(),
+              [](const F& a, const F& b) { return a.t < b.t; });
+    for (const auto& f : files) {
+        if (total <= kMaxBytes) break;
+        fs::remove(f.p, ec);
+        total -= f.sz;
+    }
+}
+
+// Full session export: tabs + history + bookmarks in one file.
+// Format is line-based and re-importable by hand or by sync tooling.
+std::wstring UiExportSession() {
+    std::time_t now = std::time(nullptr);
+    std::tm tm{};
+    localtime_s(&tm, &now);
+    wchar_t stamp[32];
+    swprintf_s(stamp, L"%04d%02d%02d-%02d%02d%02d",
+               tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+               tm.tm_hour, tm.tm_min, tm.tm_sec);
+    const fs::path path = SavedDirPath() /
+        (L"session-" + std::wstring(stamp) + L".txt");
+    std::wofstream out(path, std::ios::trunc);
+    if (!out) {
+        g_consoleStatus = L"Не удалось создать файл сессии.";
+        return {};
+    }
+    out << L"# Browser session export\n";
+    out << L"# sections: TABS / HISTORY / BOOKMARKS\n\n";
+    out << L"[TABS]\n";
+    EnsureTabs();
+    for (const auto& tab : g_tabs)
+        if (!tab.url.empty()) out << tab.url << L'\n';
+    out << L"\n[HISTORY]\n";
+    {
+        std::wifstream in(HistoryFilePath());
+        std::wstring line;
+        while (std::getline(in, line)) out << line << L'\n';
+    }
+    out << L"\n[BOOKMARKS]\n";
+    {
+        std::wifstream in(BookmarksFilePath());
+        std::wstring line;
+        while (std::getline(in, line)) out << line << L'\n';
+    }
+    g_consoleStatus = L"Сессия сохранена: " + path.filename().wstring();
+    return path;
 }
 
 void UiShowTabs() {
