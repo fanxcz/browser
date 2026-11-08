@@ -13,11 +13,10 @@ TESTS:
   .\build\Release\browser_tests.exe
 
 OUTPUT:
-  build\Release\Browser.exe     — консольная версия
-  build\Release\BrowserGui.exe  — оконная версия (лёгкий терминальный GUI)
+  build\Release\Browser.exe     — the browser (console UI)
 
 USE:
-  Start Browser.exe in a terminal, or BrowserGui.exe for the windowed UI.
+  Start Browser.exe in a terminal.
   Enter a search query or website address.
   Search uses DuckDuckGo HTML first, then Bing and Google if needed.
   Pages load in the background — the interface stays responsive and Esc cancels.
@@ -30,8 +29,13 @@ USE:
   Ctrl+S saves the page, Ctrl+C copies a link URL, Ctrl+V pastes into omnibox.
   RSS/Atom feeds render as readable lists; JS-shell pages auto-retry via
   headless Edge when msedge is installed (or use `edge <url>`).
+  `web <url>` opens the page in a separate WebView2 (Chromium) window —
+  real HTML/CSS/JS rendering, hotkeys work inside the window.
+  `wiki download <ru|en> [часть|all]` downloads an offline Wikipedia text
+  library; `wiki portal|search|open` reads it in the WebView2 window.
   Optional sync: `sync push` / `sync pull` via GitHub Gist (needs `gh` CLI).
 
-There is no WebView2 or heavy GUI dependency — BrowserGui.exe is a
-lightweight Win32 window that reuses the same console engine.
+WebView2 Runtime is only needed for `web` and `wiki` (usually already
+present with Edge on Windows 10/11); the console browser itself does not
+require it.
 Read README.md for the full control list and limitations.

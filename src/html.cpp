@@ -1,6 +1,7 @@
 #include "browser.h"
 
 #include <array>
+#include <cctype>
 #include <cwchar>
 #include <unordered_map>
 #include <unordered_set>
@@ -200,9 +201,19 @@ static void AppendDomTextNode(lxb_dom_node_t* node, std::string& output,
             if (src.empty()) src = GetAttr(element, "data-src", 8);
             if (src.empty()) src = GetAttr(element, "data-original", 13);
             if (!src.empty() && src.rfind("data:", 0) != 0) {
-                const std::wstring abs = ResolveAbsoluteUrl(src, baseUrl);
-                if (!abs.empty())
-                    output += "\n\x02" + ToUtf8(abs) + "\n";
+                // Skip icons/favicons — they are chrome, not content, and
+                // would flood the image section and inline markers.
+                std::string probe = src;
+                for (char& c : probe)
+                    c = static_cast<char>(std::tolower(
+                        static_cast<unsigned char>(c)));
+                if (probe.find("favicon") == std::string::npos &&
+                    probe.find(".ico") == std::string::npos) {
+                    const std::wstring abs =
+                        ResolveAbsoluteUrl(src, baseUrl);
+                    if (!abs.empty())
+                        output += "\n\x02" + ToUtf8(abs) + "\n";
+                }
             }
             return;
         }
@@ -272,9 +283,14 @@ static void AppendDomTextNode(lxb_dom_node_t* node, std::string& output,
         if (block) {
             if (IsParagraphTag(tag)) {
                 // Paragraph break: "\n\x01\n" yields one blank line and
-                // collapses when nested blocks already emitted one.
-                const bool hasBreak = output.size() >= 3 &&
-                    output.compare(output.size() - 3, 3, "\n\x01\n") == 0;
+                // collapses when a blank line was already emitted.
+                const size_t n = output.size();
+                const bool hasBreak =
+                    (n >= 2 && output[n - 2] == '\x01' &&
+                     output[n - 1] == '\n') ||
+                    (n >= 3 && output.compare(n - 3, 3, "\n\x01\n") == 0) ||
+                    (n >= 2 && output[n - 2] == '\n' &&
+                     output[n - 1] == '\n');
                 if (!output.empty() && !hasBreak) {
                     if (output.back() != '\n') output.push_back('\n');
                     output += "\x01\n";
@@ -304,7 +320,8 @@ std::string NormalizeDisplayText(const std::string& input) {
     // including the next '\n' is copied unchanged — spaces and tabs survive.
     bool verbatim = false;
 
-    for (unsigned char ch : input) {
+    for (size_t i = 0; i < input.size(); ++i) {
+        const unsigned char ch = static_cast<unsigned char>(input[i]);
         if (verbatim) {
             output.push_back(static_cast<char>(ch));
             if (ch == '\n') {
@@ -315,6 +332,15 @@ std::string NormalizeDisplayText(const std::string& input) {
             continue;
         }
         if (ch == 0x01) {
+            // "\x01\n" is an empty verbatim line = a requested blank line.
+            // Collapse runs of them so paragraphs never produce stacks
+            // of empty rows (also keeps intentional <pre> gaps to one).
+            if (i + 1 < input.size() && input[i + 1] == '\n' &&
+                output.size() >= 2 &&
+                static_cast<unsigned char>(output[output.size() - 2]) ==
+                    0x01 &&
+                output.back() == '\n')
+                continue;
             if (pendingNewline) {
                 while (!output.empty() && output.back() == ' ')
                     output.pop_back();

@@ -1,8 +1,8 @@
 # Browser 1.0 — консольный браузер для Windows
 
-**Два режима: консоль и лёгкий GUI. Никакого WebView2 и тяжёлых зависимостей.**
+**Консольный браузер для Windows. Без GUI-версии — только терминал.**
 
-Browser — браузер на C++20. Консольная версия (`Browser.exe`) работает прямо в терминале; оконная версия (`BrowserGui.exe`) — то же самое в лёгком Win32-окне «как терминал»: тёмная тема, моноширинный шрифт, те же страницы и команды. Введи запрос или адрес — и страница отрисуется: заголовок, читаемый текст и кликабельные ссылки.
+Browser — браузер на C++20, работающий прямо в консоли. Введи запрос или адрес — и страница отрисуется: заголовок, читаемый текст и кликабельные ссылки. Для сайтов, которым нужен настоящий рендер, есть команда `web` — страница открывается в отдельном окне на движке Chromium (WebView2), а офлайн-библиотека Wikipedia доступна через `wiki`.
 
 ## Возможности
 
@@ -30,6 +30,8 @@ Browser — браузер на C++20. Консольная версия (`Brows
 - **Поиск по странице**: `Ctrl+F` или `/`, повторный `Enter` — следующее вхождение; все совпадения подсвечиваются в тексте до перехода на другую страницу.
 - **Загрузка файлов** в `downloads/` с прогрессом, отменой, **докачкой** и **автопроверкой SHA-256**: если рядом с файлом лежит `<имя>.sha256.txt` (как у релизов NEXUS и многих других), после закачки хеш сверяется автоматически — статус покажет `SHA-256 OK` или `MISMATCH`. Прерванную закачку (`.part`) можно продолжить — повторный `download <url>` докачает с места обрыва через HTTP Range. Список загрузок — `Ctrl+J`: Enter/клик открывает файл, `v` проверяет sha256, `e` открывает папку в Explorer, `r` обновляет. Загрузки ставятся в очередь — можно запускать несколько файлов подряд, в статус-строке видно `⇩ размер (+N в очереди)`. `Ctrl+Shift+O` открывает страницу в системном браузере. Ссылки на ~60 типов файлов (.exe, .zip, .pdf, .vsix, .dmg, .appimage, .torrent…) при Enter сразу скачиваются, а не открываются как страница.
 - **Адаптация к размеру терминала**: перерисовка при изменении окна, компактный режим для узких консолей.
+- **WebView2-окно** (`web <url>`): отдельное окно на движке Edge/Chromium с настоящим рендером HTML/CSS/JS — `web back|forward|reload|zoom-*|find <текст>|external|off`; в окне работают `F5`/`Ctrl+R`, `Alt+←/→`, `Ctrl+=/-/0`, `Ctrl+F`, `Ctrl+Shift+E`; загрузки файлов сохраняются в `downloads/`.
+- **Офлайн-Wikipedia** (`wiki`): `wiki download <ru|en> [часть|all|N]` — резюмируемая закачка статей (только текст), `wiki portal|search|grep|open` — чтение и поиск прямо в WebView2-окне через `https://wiki.local/`.
 
 ## Требования
 
@@ -54,7 +56,7 @@ cmake --build build --config Release --parallel
 
 Результат: `build\Release\Browser.exe`. Сборка Debug аналогична (`--config Debug`).
 
-**WebView2 SDK и Runtime не нужны.**
+WebView2 SDK слинкован статически в `Browser.exe`. Сам **WebView2 Runtime** нужен только для команд `web` и `wiki` (на Windows 10/11 обычно уже установлен вместе с Edge); без него консольная версия работает полностью.
 
 ## Тесты
 
@@ -63,16 +65,12 @@ cmake --build build --config Release --target browser_tests --parallel
 .\build\Release\browser_tests.exe
 ```
 
-171 проверка: кодировки UTF-8↔UTF-16, URL-кодирование (включая IDN/punycode), нормализация URL, разбор `Cache-Control`, round-trip кэша, определение кодировок (BOM, `Content-Type`, `<meta>`), парсинг HTML (включая битую разметку и страницы на 5000 абзацев), поиск на странице, распаковка ссылок-обёрток DuckDuckGo/Bing/Google, детект CAPTCHA-страниц, история и закладки. Фикстуры лежат в `tests/fixtures/`.
+176 проверок: кодировки UTF-8↔UTF-16, URL-кодирование (включая IDN/punycode), нормализация URL, разбор `Cache-Control`, round-trip кэша, определение кодировок (BOM, `Content-Type`, `<meta>`), парсинг HTML (включая битую разметку и страницы на 5000 абзацев), поиск на странице, распаковка ссылок-обёрток DuckDuckGo/Bing/Google, детект CAPTCHA-страниц, история и закладки. Фикстуры лежат в `tests/fixtures/`.
 
 ## Запуск
 
 ```powershell
 .\build\Release\Browser.exe       # консольный режим
-.\build\Release\BrowserGui.exe    # оконный режим (лёгкий GUI)
-```
-
-Оконная версия — тот же браузер в Win32-окне с терминальной эстетикой: полоса вкладок, навигация, омнибокс с автодополнением, контент моноширинным шрифтом. Управление полностью с клавиатуры (тот же набор клавиш, что в консоли), мышь работает опционально: клик по ссылке/вкладке/кнопке, колесо — прокрутка. Если консольный режим недоступен (перенаправленный ввод/вывод), консольная версия автоматически включает текстовый fallback-режим с командами.
 
 ## Управление
 
@@ -137,7 +135,7 @@ cmake --build build --config Release --target browser_tests --parallel
 
 Все действия доступны и мышью: наведение подсвечивает ссылки и кнопки, клик открывает, колесо прокручивает. Мышь не обязательна — весь браузер управляется с клавиатуры в стиле Vimium/браузерных хоткеев.
 
-В поле поиска доступны команды: `back`, `forward`, `reload`, `home`, `history`, `bookmarks`, `bookmark add`, `clear-history`, `clear-history-older <дн>`, `export`, `import <файл>`, `bookmarks-clear`, `cache-clear`, `search <текст>`, `open <адрес|номер>`, `edge <адрес>` (рендер через headless Edge; также `Ctrl+Shift+E` на текущей странице и авто-fallback для JS-страниц без текста), `downloads`/`stop`/`pause` (пауза очереди загрузок), `download <url> [имя]`, `sync`/`sync push`/`sync pull`/`sync status` (синхронизация через GitHub Gist, нужен `gh`), `help`, `exit`.
+В поле поиска доступны команды: `back`, `forward`, `reload`, `home`, `history`, `bookmarks`, `bookmark add`, `clear-history`, `clear-history-older <дн>`, `export`, `import <файл>`, `bookmarks-clear`, `cache-clear`, `search <текст>`, `open <адрес|номер>`, `edge <адрес>` (рендер через headless Edge; также `Ctrl+Shift+E` на текущей странице и авто-fallback для JS-страниц без текста), `downloads`/`stop`/`pause` (пауза очереди загрузок), `download <url> [имя]`, `sync`/`sync push`/`sync pull`/`sync status` (синхронизация через GitHub Gist, нужен `gh`), `web <url>` (страница в окне WebView2/Chromium; `web back|forward|reload|zoom-*|find|external|off`), `wiki ...` (офлайн-Википедия: `download <ru|en> [часть|all|N]`, `portal`, `search`, `grep`, `stop`), `help`, `exit`.
 
 ### Синхронизация через GitHub Gist (опционально)
 
@@ -160,10 +158,9 @@ src/
   sync.cpp         — синхронизация данных через GitHub Gist (gh CLI)
   app.cpp          — навигация, вкладки, поиск, async-загрузка, prefetch
   console_ui.cpp   — консольный интерфейс: отрисовка, мышь, клавиатура
-  gui.h/gui_main.cpp/gui_render.cpp/gui_input.cpp
-                     — оконная версия: Win32-окно «как терминал»,
-                       тот же browser_core, клавиатура-first
-  main.cpp         — точка входа консольной версии + fallback-режим
+  wvhost.cpp/h     — WebView2-окно (Chromium) для `web`/`wiki`
+  wiki.cpp         — офлайн-библиотека Wikipedia (ru/en), wiki.local
+  main.cpp         — точка входа + fallback-режим
 tests/             — unit-тесты и HTML-фикстуры
 ```
 

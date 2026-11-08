@@ -402,6 +402,29 @@ bool EdgePage(const std::wstring& rawUrl) {
     return true;
 }
 
+// Strip internal display markers (\x01 verbatim/blank-line, \x02 inline
+// image) so plain-text output (fallback mode, saved .txt) stays readable.
+static std::string StripDisplayMarkers(const std::string& in) {
+    std::string out;
+    out.reserve(in.size());
+    for (size_t i = 0; i < in.size(); ++i) {
+        const char c = in[i];
+        if (c == '\x01') {
+            if (i + 1 < in.size() && in[i + 1] == '\n') {
+                out += '\n';
+                ++i;
+            }
+            continue;
+        }
+        if (c == '\x02') {
+            out += "[IMG] ";
+            continue;
+        }
+        out += c;
+    }
+    return out;
+}
+
 static void PrintLoadedPage(const FetchOutcome& outcome) {
     ui::PageHeader(g_currentTitle, outcome.finalUrl, outcome.status,
                    outcome.bodyBytes, outcome.fromCache);
@@ -412,7 +435,7 @@ static void PrintLoadedPage(const FetchOutcome& outcome) {
     } else {
         if (g_currentText.size() > MAX_DISPLAY_CHARS)
             g_currentText.resize(MAX_DISPLAY_CHARS);
-        std::cout << "\n" << g_currentText << "\n";
+        std::cout << "\n" << StripDisplayMarkers(g_currentText) << "\n";
     }
 
     RenderPageImages(g_currentImages);
@@ -1978,7 +2001,8 @@ std::wstring UiSavePage() {
         std::fwrite(g_currentHtml.data(), 1, g_currentHtml.size(), file);
     } else {
         const std::string out = "TITLE: " + g_currentTitle +
-            "\nURL: " + ToUtf8(g_currentUrl) + "\n\n" + g_currentText;
+            "\nURL: " + ToUtf8(g_currentUrl) + "\n\n" +
+            StripDisplayMarkers(g_currentText);
         std::fwrite(out.data(), 1, out.size(), file);
     }
     std::fclose(file);

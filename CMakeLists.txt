@@ -99,24 +99,6 @@ endif()
 
 set_target_properties(Browser PROPERTIES OUTPUT_NAME "Browser")
 
-# Windowed browser GUI: terminal-style window over browser_core.
-# (src/webui_*.cpp — experimental WebView2 frontend, not built.)
-add_executable(BrowserGui WIN32
-    src/gui_main.cpp
-    src/gui_render.cpp
-    src/gui_input.cpp
-    src/gui_images.cpp
-)
-target_link_libraries(BrowserGui PRIVATE browser_core
-    "${WEBVIEW2_NATIVE}/x64/WebView2LoaderStatic.lib")
-if(MSVC)
-    target_sources(BrowserGui PRIVATE assets/browser.rc)
-    target_compile_options(BrowserGui PRIVATE /W4 /permissive- /EHsc /utf-8
-        $<$<CONFIG:Release>:/O2;/Oi;/Ot;/Gy;/Gw>)
-    target_link_options(BrowserGui PRIVATE $<$<CONFIG:Release>:/OPT:REF;/OPT:ICF>)
-endif()
-set_target_properties(BrowserGui PROPERTIES OUTPUT_NAME "BrowserGui")
-
 # ---------------------------------------------------------------------------
 # Unit tests (pure functions: encoding, URL, charset, HTML parsing, cache)
 # ---------------------------------------------------------------------------
