@@ -1181,11 +1181,7 @@ namespace console_ui {
                     std::to_wstring(pages) + L" · " +
                     std::to_wstring(pct) + L"% · " +
                     std::to_wstring(g_currentLinks.size()) + L" сс.";
-                const std::string& h = g_currentHtml;
-                if (h.size() > 5 && h[0] == '<' &&
-                    (h.find("<rss") != std::string::npos ||
-                     h.find("<feed") != std::string::npos ||
-                     h.find("rdf:RDF") != std::string::npos)) {
+                if (g_isFeed) {
                     size_t items = 0;
                     for (size_t i = 0; i + 2 < pageText.size(); ++i)
                         if (pageText[i] == L'\n' && pageText[i + 1] == L'•')

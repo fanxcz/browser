@@ -217,6 +217,12 @@ std::wstring NormalizeUrl(std::wstring url) {
     while (!url.empty() && (url.front() == L' ' || url.front() == L'\t'))
         url.erase(url.begin());
 
+    // A raw double quote would break out of the quoted argument when the
+    // URL is embedded in a command line (headless Edge --dump-dom).
+    if (url.find(L'"') != std::wstring::npos ||
+        url.find(L'\'') != std::wstring::npos)
+        return {};
+
     if (url.find(L"://") == std::wstring::npos) {
         // A scheme without "://" (mailto:, javascript:, tel:, data: ...) means
         // an unsupported protocol — reject it instead of treating the scheme

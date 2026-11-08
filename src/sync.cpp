@@ -3,6 +3,7 @@
 
 #include "browser.h"
 
+#include <algorithm>
 #include <cstring>
 
 namespace {
@@ -69,13 +70,22 @@ void WriteTextFile(const fs::path& path, const std::string& data) {
     out << data;
 }
 
-// gist=<id> line inside data/settings.txt.
+// gist=<id> line inside data/settings.txt. Gist ids are hex; anything
+// else is rejected so the value can't inject into the gh command line.
 std::wstring GistId() {
     std::wifstream in(DataDirPath() / L"settings.txt");
     std::wstring line;
-    while (std::getline(in, line))
-        if (line.rfind(L"gist=", 0) == 0)
-            return TrimWide(line.substr(5));
+    while (std::getline(in, line)) {
+        if (line.rfind(L"gist=", 0) != 0) continue;
+        const std::wstring id = TrimWide(line.substr(5));
+        const bool ok = !id.empty() && id.size() <= 64 &&
+            std::all_of(id.begin(), id.end(), [](wchar_t c) {
+                return (c >= L'0' && c <= L'9') ||
+                       (c >= L'a' && c <= L'f') ||
+                       (c >= L'A' && c <= L'F');
+            });
+        return ok ? id : std::wstring();
+    }
     return {};
 }
 

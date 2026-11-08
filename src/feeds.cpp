@@ -80,6 +80,7 @@ FetchOutcome BuildFeedPage(const std::wstring& url,
     FetchOutcome out;
     out.ok = true;
     out.finalUrl = url;
+    out.isFeed = true;
     out.title = "Лента";
 
     // Feed/channel title.

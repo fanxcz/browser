@@ -68,6 +68,7 @@ bool g_consoleUiMode = false;
 bool g_consolePageOpen = false;
 int g_refreshSeconds = 0;
 std::string g_refreshUrl;
+bool g_isFeed = false;
 std::wstring g_consoleStatus;
 bool g_offline = false;
 std::vector<Link> g_currentLinks;
@@ -229,6 +230,7 @@ static void CommitOutcome(const FetchOutcome& outcome) {
     g_currentForms = outcome.forms;
     g_refreshSeconds = outcome.refreshSeconds;
     g_refreshUrl = outcome.refreshUrl;
+    g_isFeed = outcome.isFeed;
     g_consolePageOpen = true;
 }
 
@@ -311,6 +313,12 @@ static void LoadTabToGlobals(const TabState& tab) {
     g_currentImages = tab.images;
     g_currentFields = tab.fields;
     g_currentForms = tab.forms;
+    // Restore the feed flag cheaply (once per switch, not per frame).
+    const std::string& h = g_currentHtml;
+    g_isFeed = h.size() > 5 && h[0] == '<' &&
+        (h.find("<rss") != std::string::npos ||
+         h.find("<feed") != std::string::npos ||
+         h.find("rdf:RDF") != std::string::npos);
     g_consolePageOpen = tab.pageOpen;
 }
 
@@ -1453,6 +1461,7 @@ void CommitInternalPage(const std::wstring& kind) {
     g_currentImages.clear();
     g_currentFields.clear();
     g_currentForms.clear();
+    g_isFeed = false;
     g_consolePageOpen = true;
 }
 
@@ -1499,6 +1508,7 @@ static void CommitCustomPage(const std::wstring& url,
     g_currentImages.clear();
     g_currentFields.clear();
     g_currentForms.clear();
+    g_isFeed = false;
     g_consolePageOpen = true;
     g_consoleStatus.clear();
 }

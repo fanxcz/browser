@@ -157,12 +157,14 @@ struct FetchOutcome {
     std::string html;        // decoded UTF-8 source, capped (for Ctrl+S)
     int refreshSeconds = 0;
     std::string refreshUrl;
+    bool isFeed = false;    // RSS/Atom/RDF rendered by feeds.cpp
     std::wstring error;  // human-readable, UTF-16
 };
 
 // Meta refresh state of the current page (0 = none).
 extern int g_refreshSeconds;
 extern std::string g_refreshUrl;
+extern bool g_isFeed;   // current page is an RSS/Atom feed view
 
 // A navigation request executed on a worker thread.
 struct LoadJob {
