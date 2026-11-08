@@ -475,6 +475,8 @@ static Response RequestOnce(const std::wstring& url, CacheMode mode,
                 value = value * 10 + static_cast<unsigned>(ch - L'0');
             }
             response.contentLength = value;
+            // Expose to the UI for the "loaded/total" progress readout.
+            if (value > 0) g_loadTotal.store(value);
         }
 
         if (response.status == HTTP_STATUS_NOT_MODIFIED && haveCached) {

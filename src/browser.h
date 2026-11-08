@@ -204,7 +204,8 @@ extern std::vector<PageImage> g_currentImages;
 extern std::vector<FormField> g_currentFields;
 extern std::vector<FormDef> g_currentForms;
 extern std::string g_currentHtml;      // raw page source for "save page"
-extern std::atomic_uint64_t g_loadDownloaded; // bytes received by active load
+extern std::atomic_uint64_t g_loadDownloaded;
+extern std::atomic_uint64_t g_loadTotal;   // Content-Length, 0 = unknown // bytes received by active load
 extern std::vector<std::wstring> g_navigation;
 extern size_t g_navigationIndex;
 extern bool g_hasNavigation;
@@ -424,6 +425,7 @@ void UiSubmitFormForField(int fieldIndex);
 
 // Save the current page source/text to a file (Ctrl+S). Returns the path.
 std::wstring UiSavePage();
+std::wstring UiSavePageMarkdown();
 void UiShowDownloadsPage();
 void UiOpenInternalPage(const std::wstring& kind);
 void UiOpenDownloadedFile(const std::wstring& name);
@@ -439,15 +441,6 @@ uint64_t TotalDownloadProgress();
 size_t ActiveDownloadCount();
 void CancelAllDownloads();
 void UiCancelDownloadByName(const std::wstring& name);
-
-// wiki.cpp — offline Wikipedia library (ru/en).
-void UiWiki(const std::wstring& args);
-void ShutdownWiki();
-fs::path WikiHtmlRoot();
-bool IsWikiPageUrl(const std::wstring& url);
-// Builds a wiki://<lang>/<file> | wiki://portal | wiki://random |
-// wiki://search/<q> | wiki://grep/<q> page through the load pipeline.
-FetchOutcome WikiFetchPage(const std::wstring& url);
 
 // console_ui helpers — in-memory pages for source/info + status commands.
 void UiViewSourcePage();

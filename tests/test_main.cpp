@@ -481,8 +481,8 @@ static void TestNormalizeText() {
     CHECK(NormalizeDisplayText("") .empty());
 }
 
-static void TestReaderAndWiki() {
-    std::printf("== reader/wiki ==\n");
+static void TestReaderMode() {
+    std::printf("== reader mode ==\n");
 
     // Reader mode keeps long paragraphs + marker lines, drops boilerplate.
     const std::string noisy =
@@ -509,25 +509,6 @@ static void TestReaderAndWiki() {
     CHECK(clean.find("Buy now") == std::string::npos);
     // Empty/garbage input yields empty output (caller keeps original).
     CHECK(FilterReaderText("Hi\nOK\n").empty());
-
-    // wiki:// portal renders even with an empty library.
-    const FetchOutcome portal = WikiFetchPage(L"wiki://portal");
-    CHECK(portal.ok);
-    CHECK(portal.title.find("Wikipedia") != std::wstring::npos);
-    CHECK(!portal.links.empty());
-
-    // wiki article fast path: existing .txt renders without the index.
-    {
-        std::error_code ec;
-        const fs::path dir = DataDirPath().parent_path() /
-            L"wiki" / L"ru";
-        fs::create_directories(dir, ec);
-        std::wofstream f(dir / L"TestArticle.txt", std::ios::trunc);
-        f << L"TestArticle\n\nArticle body text for opening check.\n";
-    }
-    const FetchOutcome art = WikiFetchPage(L"wiki://ru/TestArticle");
-    CHECK(art.ok);
-    CHECK(art.text.find("Article body text") != std::wstring::npos);
 }
 
 static void TestSearchHelpers() {
@@ -631,7 +612,7 @@ int main() {
     TestTabs();
     TestSuggestionsAndSave();
     TestNormalizeText();
-    TestReaderAndWiki();
+    TestReaderMode();
     TestSearchHelpers();
     TestBookmarksAndHistory();
 

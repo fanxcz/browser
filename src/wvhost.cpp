@@ -444,14 +444,6 @@ void ThreadMain() {
                             if (FAILED(g_ctrl->get_CoreWebView2(&g_view)) ||
                                 !g_view)
                                 return S_OK;
-                            // Local Wikipedia library at https://wiki.local/.
-                            ComPtr<ICoreWebView2_3> wv3;
-                            if (SUCCEEDED(g_view.As(&wv3)) && wv3) {
-                                wv3->SetVirtualHostNameToFolderMapping(
-                                    L"wiki.local",
-                                    WikiHtmlRoot().wstring().c_str(),
-                                    COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_ALLOW);
-                            }
                             WireEvents();
                             RECT rc{};
                             GetClientRect(g_hwnd, &rc);

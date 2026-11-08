@@ -2,7 +2,7 @@
 
 **Консольный браузер для Windows. Без GUI-версии — только терминал.**
 
-Browser — браузер на C++20, работающий прямо в консоли. Введи запрос или адрес — и страница отрисуется: заголовок, читаемый текст и кликабельные ссылки. Для сайтов, которым нужен настоящий рендер, есть команда `web` — страница открывается в отдельном окне на движке Chromium (WebView2), а офлайн-библиотека Wikipedia доступна через `wiki`.
+Browser — браузер на C++20, работающий прямо в консоли. Введи запрос или адрес — и страница отрисуется: заголовок, читаемый текст и кликабельные ссылки. Для сайтов, которым нужен настоящий рендер, есть команда `web` — страница открывается в отдельном окне на движке Chromium (WebView2),.
 
 ## Возможности
 
@@ -31,7 +31,6 @@ Browser — браузер на C++20, работающий прямо в кон
 - **Загрузка файлов** в `downloads/` с прогрессом, отменой, **докачкой** и **автопроверкой SHA-256**: если рядом с файлом лежит `<имя>.sha256.txt` (как у релизов NEXUS и многих других), после закачки хеш сверяется автоматически — статус покажет `SHA-256 OK` или `MISMATCH`. Прерванную закачку (`.part`) можно продолжить — повторный `download <url>` докачает с места обрыва через HTTP Range. Список загрузок — `Ctrl+J`: Enter/клик открывает файл, `v` проверяет sha256, `e` открывает папку в Explorer, `r` обновляет. Загрузки ставятся в очередь — можно запускать несколько файлов подряд, в статус-строке видно `⇩ размер (+N в очереди)`. `Ctrl+Shift+O` открывает страницу в системном браузере. Ссылки на ~60 типов файлов (.exe, .zip, .pdf, .vsix, .dmg, .appimage, .torrent…) при Enter сразу скачиваются, а не открываются как страница.
 - **Адаптация к размеру терминала**: перерисовка при изменении окна, компактный режим для узких консолей.
 - **WebView2-окно** (`web <url>`): отдельное окно на движке Edge/Chromium с настоящим рендером HTML/CSS/JS — `web back|forward|reload|zoom-*|find <текст>|external|off`; в окне работают `F5`/`Ctrl+R`, `Alt+←/→`, `Ctrl+=/-/0`, `Ctrl+F`, `Ctrl+Shift+E`; загрузки файлов сохраняются в `downloads/`.
-- **Офлайн-Wikipedia** (`wiki`): `wiki download <ru|en> [часть|all|N]` — резюмируемая закачка статей (только текст), `wiki portal|search|grep|open` — чтение и поиск прямо в WebView2-окне через `https://wiki.local/`.
 
 ## Требования
 
@@ -56,7 +55,7 @@ cmake --build build --config Release --parallel
 
 Результат: `build\Release\Browser.exe`. Сборка Debug аналогична (`--config Debug`).
 
-WebView2 SDK слинкован статически в `Browser.exe`. Сам **WebView2 Runtime** нужен только для команд `web` и `wiki` (на Windows 10/11 обычно уже установлен вместе с Edge); без него консольная версия работает полностью.
+WebView2 SDK слинкован статически в `Browser.exe`. Сам **WebView2 Runtime** нужен только для команды `web` (на Windows 10/11 обычно уже установлен вместе с Edge); без него консольная версия работает полностью.
 
 ## Тесты
 
@@ -82,7 +81,7 @@ cmake --build build --config Release --target browser_tests --parallel
 | Клик по ссылке | Открыть ссылку (вся строка кликабельна) |
 | Клик по «[ Найти ]» | Выполнить поиск/переход |
 | Клик по строке поиска | Фокус в поле, курсор в место клика |
-| Клик по кнопкам вверху | Назад / Вперёд / Домой / Обновить / ⚙ Настройки (меню справа вверху: тема, загрузки, история, закладки, очистка, экспорт, синхронизация, wiki) |
+| Клик по кнопкам вверху | Назад / Вперёд / Домой / Обновить / ⚙ Настройки (меню справа вверху: тема, загрузки, история, закладки, очистка, экспорт, синхронизация) |
 | Колесо мыши | Прокрутка страницы |
 
 ### Клавиатура
@@ -135,7 +134,7 @@ cmake --build build --config Release --target browser_tests --parallel
 
 Все действия доступны и мышью: наведение подсвечивает ссылки и кнопки, клик открывает, колесо прокручивает. Мышь не обязательна — весь браузер управляется с клавиатуры в стиле Vimium/браузерных хоткеев.
 
-В поле поиска доступны команды: `back`, `forward`, `reload`, `home`, `history`, `bookmarks`, `bookmark add`, `clear-history`, `clear-history-older <дн>`, `export`, `import <файл>`, `bookmarks-clear`, `cache-clear`, `search <текст>`, `open <адрес|номер>`, `edge <адрес>` (рендер через headless Edge; также `Ctrl+Shift+E` на текущей странице и авто-fallback для JS-страниц без текста), `downloads`/`stop`/`pause` (пауза очереди загрузок), `download <url> [имя]`, `sync`/`sync push`/`sync pull`/`sync status` (синхронизация через GitHub Gist, нужен `gh`), `web <url>` (страница в окне WebView2/Chromium; `web back|forward|reload|zoom-*|find|external|off`), `wiki ...` (офлайн-Википедия: `download <ru|en> [часть|all|N]`, `portal`, `search`, `grep`, `stop`), `help`, `exit`.
+В поле поиска доступны команды: `back`, `forward`, `reload`, `home`, `history`, `bookmarks`, `bookmark add`, `clear-history`, `clear-history-older <дн>`, `export`, `import <файл>`, `bookmarks-clear`, `cache-clear`, `search <текст>`, `open <адрес|номер>`, `edge <адрес>` (рендер через headless Edge; также `Ctrl+Shift+E` на текущей странице и авто-fallback для JS-страниц без текста), `downloads`/`stop`/`pause` (пауза очереди загрузок), `download <url> [имя]`, `sync`/`sync push`/`sync pull`/`sync status` (синхронизация через GitHub Gist, нужен `gh`), `web <url>` (страница в окне WebView2/Chromium; `web back|forward|reload|zoom-*|find|external|off`), `help`, `exit`.
 
 ### Синхронизация через GitHub Gist (опционально)
 
@@ -158,8 +157,7 @@ src/
   sync.cpp         — синхронизация данных через GitHub Gist (gh CLI)
   app.cpp          — навигация, вкладки, поиск, async-загрузка, prefetch
   console_ui.cpp   — консольный интерфейс: отрисовка, мышь, клавиатура
-  wvhost.cpp/h     — WebView2-окно (Chromium) для `web`/`wiki`
-  wiki.cpp         — офлайн-библиотека Wikipedia (ru/en), wiki.local
+  wvhost.cpp/h     — WebView2-окно (Chromium) для `web`
   main.cpp         — точка входа + fallback-режим
 tests/             — unit-тесты и HTML-фикстуры
 ```

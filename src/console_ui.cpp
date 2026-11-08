@@ -209,7 +209,7 @@ namespace console_ui {
         Downloads, HistoryPg, BookmarksPg,
         ClearHistory, ClearBookmarks, ClearCache, Export,
         SyncPush, SyncPull, SyncStatus,
-        WikiPortal, WikiRandom, WikiDlRu, WikiDlEn, WebOff, Help,
+        WebOff, Help,
     };
     struct MenuItem { std::wstring label; MenuAction action; };
 
@@ -234,10 +234,6 @@ namespace console_ui {
             {L"Синхронизация: отправить (push)",   MenuAction::SyncPush},
             {L"Синхронизация: получить (pull)",    MenuAction::SyncPull},
             {L"Синхронизация: статус",             MenuAction::SyncStatus},
-            {L"Wikipedia: открыть портал",         MenuAction::WikiPortal},
-            {L"Wikipedia: случайная статья",       MenuAction::WikiRandom},
-            {L"Wikipedia: скачать RU (~200 МБ)",   MenuAction::WikiDlRu},
-            {L"Wikipedia: скачать EN (~200 МБ)",   MenuAction::WikiDlEn},
             {L"Скрыть WebView2-окно",              MenuAction::WebOff},
             {L"Справка",                           MenuAction::Help},
         };
@@ -267,6 +263,7 @@ namespace console_ui {
         int searchButtonLeft = -1;
         int searchButtonRight = -1;
         bool findMode = false;
+        bool cmdMode = false;   // bottom command line (opened by ':'/';'/F2)
         std::wstring findQuery;
         size_t findPos = 0;
         int editingField = -1;      // >= 0: omnibox edits g_currentFields[N]
@@ -589,6 +586,8 @@ namespace console_ui {
         } else if (state.input.empty()) {
             if (state.findMode) {
                 shown = L"Найти на странице…";
+            } else if (state.cmdMode) {
+                shown = L"> команда…  (back · stats · tabs · help)";
             } else if (g_consolePageOpen) {
                 // Browser-style omnibox: show the current URL until the user types.
                 shown = g_currentUrl;
@@ -826,26 +825,31 @@ namespace console_ui {
             state.suggestSource = state.input;
             state.suggestIndex = -1; // input changed: drop stale highlight
         }
-        // ":" prefix → command autocomplete (like Vim's command line).
-        if (!state.input.empty() && state.input.front() == L':' &&
-            state.input.size() >= 2) {
+        // Command mode → command autocomplete (bottom command line).
+        if (state.cmdMode) {
             static const wchar_t* kCommands[] = {
                 L"back", L"forward", L"reload", L"home", L"history",
                 L"bookmarks", L"downloads", L"download", L"stats", L"tabs",
                 L"copy", L"source", L"info", L"reader", L"backup",
-                L"bookmark", L"clear-history", L"export", L"import",
-                L"bookmarks-clear", L"cache-clear", L"edge", L"web",
-                L"wiki", L"sync", L"stop", L"pause", L"exit" };
-            const std::wstring needle = LowerWide(state.input.substr(1));
+                L"session", L"md", L"bookmark", L"clear-history",
+                L"export",
+                L"import", L"bookmarks-clear", L"cache-clear", L"edge",
+                L"web", L"sync", L"stop", L"pause", L"exit" };
+            const std::wstring needle = LowerWide(state.input);
             state.suggestions.clear();
             for (const wchar_t* cmd : kCommands) {
                 if (state.suggestions.size() >= 8) break;
-                if (LowerWide(cmd).find(needle) == 0)
+                if (needle.empty() ||
+                    LowerWide(cmd).find(needle) == 0)
                     state.suggestions.push_back(cmd);
             }
             if (state.suggestIndex >=
                 static_cast<int>(state.suggestions.size()))
                 state.suggestIndex = -1;
+        } else if (!state.input.empty() && state.input.front() == L':' &&
+            state.input.size() >= 2) {
+            // Legacy ':'-prefixed input still completes commands.
+            state.suggestions.clear();
         } else if (state.focus == Focus::Search && !state.findMode &&
             state.editingField < 0 && state.input.size() >= 2)
             state.suggestions = GetUrlSuggestions(state.input, 8);
@@ -857,8 +861,9 @@ namespace console_ui {
         const bool loading = g_loadRunning.load();
         // Bottom command line (input starts with ':') is repainted after
         // page content so the box is not overdrawn by page lines.
-        const bool cmdLine = state.focus == Focus::Search &&
-            !state.input.empty() && state.input.front() == L':';
+        const bool cmdLine = state.cmdMode ||
+            (state.focus == Focus::Search && !state.input.empty() &&
+             state.input.front() == L':');
 
         DrawTabStrip(state); // row 0: browser tabs, always visible
         DrawSettingsButton(state); // row 1, right edge: ⚙ Настройки
@@ -883,7 +888,7 @@ namespace console_ui {
             // the top omnibox (like Vim's command line).
             DrawSearchBox(state, cmdLine ? std::max(3, height - 5) : center - 2);
             Center(state, center + 2,
-                   L"Введите запрос или адрес  ·  Enter  ·  wiki: статья  ·  :команда", kMuted);
+                   L"Введите запрос или адрес  ·  Enter  ·  ; — команды внизу", kMuted);
             Center(state, center + 4,
                    L"Ctrl+H — история   Ctrl+F — найти   j/k — ссылки   Enter — открыть   o — адрес", kMuted);
             DrawHomeBookmarks(state, center + 6);
@@ -1104,8 +1109,15 @@ namespace console_ui {
             std::wstring status = g_consoleStatus;
             if (loading) {
                 const uint64_t got = g_loadDownloaded.load();
-                status = L"Загрузка… " + FormatBytes(got) +
-                         L"   Esc — отмена   " + status;
+                const uint64_t total = g_loadTotal.load();
+                const std::wstring prev = status;
+                status = L"Загрузка… " + FormatBytes(got);
+                if (total > 0) {
+                    const int pct = static_cast<int>(got * 100 / total);
+                    status += L" / " + FormatBytes(total) + L" (" +
+                        std::to_wstring(std::min(100, pct)) + L"%)";
+                }
+                status += L"   Esc — отмена   " + prev;
             }
             else if (state.editingField >= 0) {
                 status = L"Enter — сохранить   Ctrl+Enter — отправить форму   Esc — отменить";
@@ -1523,10 +1535,6 @@ namespace console_ui {
         case MenuAction::SyncPush:       UiSync(L"push"); break;
         case MenuAction::SyncPull:       UiSync(L"pull"); break;
         case MenuAction::SyncStatus:     UiSync(L"status"); break;
-        case MenuAction::WikiPortal:     UiWiki(L"portal"); break;
-        case MenuAction::WikiRandom:     UiWiki(L"random"); break;
-        case MenuAction::WikiDlRu:       UiWiki(L"download ru 200mb"); break;
-        case MenuAction::WikiDlEn:       UiWiki(L"download en 200mb"); break;
         case MenuAction::WebOff:
             wv::Hide();
             g_consoleStatus = L"WebView2-окно скрыто.";
@@ -1611,6 +1619,7 @@ namespace console_ui {
         if (!value.empty() && value.front() == L':')
             value = TrimWide(value.substr(1));
         state.input.clear();
+        state.cmdMode = false;
         state.caret = 0;
         state.inputViewStart = 0;
         state.browsingHistory = false;
@@ -1755,10 +1764,6 @@ namespace console_ui {
             }
             return;
         }
-        if (lower == L"wiki" || lower.rfind(L"wiki ", 0) == 0) {
-            UiWiki(lower == L"wiki" ? L"" : TrimWide(value.substr(5)));
-            return;
-        }
         if (lower == L"stop") { StopDownload(); return; }
         if (lower == L"pause") { UiToggleDownloadPause(); return; }
         if (lower == L"sync" || lower.rfind(L"sync ", 0) == 0) {
@@ -1795,7 +1800,7 @@ namespace console_ui {
         if (lower == L"bookmarks-clear") { UiClearBookmarks(); return; }
         if (lower == L"cache-clear") { UiClearCache(); return; }
         if (lower == L"help") {
-            g_consoleStatus = L"Запрос или адрес + Enter. Команды: back, forward, reload, home, history, bookmarks, downloads, download <url> [имя], edge <url>, web [url|back|find <т>], wiki <запрос>|random|download ru|en, stop, bookmark add, stats, tabs, copy, source, info, clear-history, clear-history-older <дн>, export, import <файл>, bookmarks-clear, cache-clear, exit. Клавиши на странице: j/k, Enter, o, /, b/f, g/G, u — исходник, i — инфо, h — история, n/w — вкладки, ,/. — навигация, s — сохранить, a — закладка, e — внешний браузер, v — вставить, z — копировать текст, ? — справка.";
+            g_consoleStatus = L"Запрос или адрес + Enter. Команды: back, forward, reload, home, history, bookmarks, downloads, download <url> [имя], edge <url>, web [url|back|find <т>], stop, bookmark add, stats, tabs, copy, source, info, clear-history, clear-history-older <дн>, export, import <файл>, bookmarks-clear, cache-clear, exit. Клавиши на странице: j/k, Enter, o, /, b/f, g/G, u — исходник, i — инфо, h — история, n/w — вкладки, ,/. — навигация, s — сохранить, a — закладка, e — внешний браузер, v — вставить, z — копировать текст, ? — справка.";
             return;
         }
         if (lower == L"stats") { UiShowStats(); return; }
@@ -1812,12 +1817,7 @@ namespace console_ui {
         if (lower == L"reader") { UiReaderMode(); return; }
         if (lower == L"backup") { MaybeDailyBackup(); g_consoleStatus = L"Резервная копия данных создана."; return; }
         if (lower == L"session") { UiExportSession(); return; }
-        // wiki:<запрос> — shorthand for the wiki command.
-        if (lower.rfind(L"wiki:", 0) == 0) {
-            UiWiki(TrimWide(value.substr(5)));
-            state.focus = Focus::Page;
-            return;
-        }
+        if (lower == L"md" || lower == L"markdown") { UiSavePageMarkdown(); return; }
         if (lower.rfind(L"search ", 0) == 0) {
             value = TrimWide(value.substr(7));
         } else if (lower.rfind(L"open ", 0) == 0) {
@@ -2131,6 +2131,11 @@ namespace console_ui {
                 // Keep findQuery so matches stay highlighted until the next
                 // search or navigation, like in a regular browser.
                 state.focus = Focus::Page;
+            } else if (state.cmdMode) {
+                state.cmdMode = false;
+                state.input.clear(); state.caret = 0;
+                state.inputViewStart = 0;
+                state.focus = Focus::Page;
             } else if (!state.input.empty()) {
                 state.input.clear(); state.caret = 0; state.inputViewStart = 0;
                 state.browsingHistory = false;
@@ -2246,9 +2251,11 @@ namespace console_ui {
                 state.hoveredItem = -1;
             };
 
-            if (ch == L':') { // bottom command line (Vim-style)
-                state.input = L":";
-                state.caret = 1;
+            if (ch == L':' || ch == L';' || code == VK_F2) {
+                // Bottom command line: type commands directly, no prefix.
+                state.cmdMode = true;
+                state.input.clear();
+                state.caret = 0;
                 state.inputViewStart = 0;
                 state.findMode = false;
                 state.focus = Focus::Search;

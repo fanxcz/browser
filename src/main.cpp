@@ -55,7 +55,6 @@ int wmainImpl() {
 
     auto shutdown = [&]() {
         wv::Shutdown();
-        ShutdownWiki();
         ShutdownAsyncLoads();
         g_loadCancel.store(true);
         CancelAllDownloads();
@@ -361,15 +360,6 @@ int wmainImpl() {
                     wv::Show(url);
                 }
             }
-            continue;
-        }
-
-        if (command == "wiki") {
-            // wiki [download <ru|en> [part|all|N] | <поиск> | search <т> |
-            //      open <т> | grep <т> | portal | stop | status]
-            std::string arg;
-            std::getline(input, arg);
-            UiWiki(ToWide(Trim(arg)));
             continue;
         }
 

@@ -31,11 +31,9 @@ USE:
   headless Edge when msedge is installed (or use `edge <url>`).
   `web <url>` opens the page in a separate WebView2 (Chromium) window —
   real HTML/CSS/JS rendering, hotkeys work inside the window.
-  `wiki download <ru|en> [часть|all]` downloads an offline Wikipedia text
-  library; `wiki portal|search|open` reads it in the WebView2 window.
   Optional sync: `sync push` / `sync pull` via GitHub Gist (needs `gh` CLI).
 
-WebView2 Runtime is only needed for `web` and `wiki` (usually already
+WebView2 Runtime is only needed for `web` (usually already
 present with Edge on Windows 10/11); the console browser itself does not
 require it.
 Read README.md for the full control list and limitations.

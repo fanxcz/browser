@@ -53,7 +53,6 @@ add_library(browser_core STATIC
     src/app.cpp
     src/console_ui.cpp
     src/wvhost.cpp
-    src/wiki.cpp
 )
 
 target_compile_definitions(browser_core PUBLIC
