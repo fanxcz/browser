@@ -109,7 +109,8 @@ if(BROWSER_BUILD_TESTS)
     add_executable(browser_tests
         tests/test_main.cpp
     )
-    target_link_libraries(browser_tests PRIVATE browser_core)
+    target_link_libraries(browser_tests PRIVATE browser_core
+        "${WEBVIEW2_NATIVE}/x64/WebView2LoaderStatic.lib")
     target_compile_definitions(browser_tests PRIVATE
         WIN32_LEAN_AND_MEAN
         NOMINMAX

@@ -1454,6 +1454,11 @@ void CommitInternalPage(const std::wstring& kind) {
 // ---------------------------------------------------------------------------
 
 void UiOpenUrl(const std::wstring& rawUrl, CacheMode mode) {
+    // Local Wikipedia library pages render inside the console UI.
+    if (LowerWide(rawUrl).rfind(L"wiki://", 0) == 0) {
+        WikiOpenConsole(rawUrl);
+        return;
+    }
     const std::wstring url = NormalizeUrl(rawUrl);
     if (url.empty()) {
         g_consoleStatus = L"Некорректный адрес сайта.";
