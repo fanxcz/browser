@@ -78,7 +78,36 @@ namespace console_ui {
     }
 
     enum class Focus { Search, Page };
-    enum class NavAction { Back, Forward, Home, Reload };
+    enum class NavAction { Back, Forward, Home, Reload, Settings };
+
+    // Settings dropdown (top-right "⚙" button) — mouse + keyboard.
+    enum class MenuAction {
+        Theme, Downloads, HistoryPg, BookmarksPg,
+        ClearHistory, ClearBookmarks, ClearCache, Export,
+        SyncPush, SyncPull, SyncStatus,
+        WikiPortal, WebOff, Help,
+    };
+    struct MenuItem { std::wstring label; MenuAction action; };
+
+    const std::vector<MenuItem>& SettingsMenuItems() {
+        static const std::vector<MenuItem> items = {
+            {L"Переключить тему (светлая/тёмная)", MenuAction::Theme},
+            {L"Загрузки",                          MenuAction::Downloads},
+            {L"История",                           MenuAction::HistoryPg},
+            {L"Закладки",                          MenuAction::BookmarksPg},
+            {L"Очистить историю",                  MenuAction::ClearHistory},
+            {L"Очистить закладки",                 MenuAction::ClearBookmarks},
+            {L"Очистить кэш",                      MenuAction::ClearCache},
+            {L"Экспорт истории и закладок (HTML)", MenuAction::Export},
+            {L"Синхронизация: отправить (push)",   MenuAction::SyncPush},
+            {L"Синхронизация: получить (pull)",    MenuAction::SyncPull},
+            {L"Синхронизация: статус",             MenuAction::SyncStatus},
+            {L"Wikipedia: открыть портал",         MenuAction::WikiPortal},
+            {L"Скрыть WebView2-окно",              MenuAction::WebOff},
+            {L"Справка",                           MenuAction::Help},
+        };
+        return items;
+    }
 
     struct ItemRow { int row = 0; int item = 0; };       // link or form field
     struct ActionHit { int row = 0; int left = 0; int right = 0; NavAction action = NavAction::Home; };
@@ -118,6 +147,11 @@ namespace console_ui {
         int suggestIndex = -1;                 // highlighted suggestion (-1 none)
         int hoverSuggest = -1;                 // hovered suggestion index
         int dropdownTop = 5;                   // first suggestion row
+        // Settings dropdown (⚙ button, top-right).
+        bool settingsOpen = false;
+        int settingsSel = 0;                   // keyboard-selected item
+        int settingsHover = -1;                // hovered item (-1 none)
+        std::vector<SuggestHit> settingsHits;
         bool homeBookmarksShown = false;
         // Full-screen image viewer (truecolor half-block rendering).
         bool viewingImage = false;
@@ -446,6 +480,22 @@ namespace console_ui {
         return x + width + 1;
     }
 
+    // "⚙ Настройки" pinned to the right edge of the nav row (row 1).
+    void DrawSettingsButton(State& state) {
+        const std::wstring label = state.width >= 60
+            ? L"⚙ Настройки" : L"⚙";
+        const int w = static_cast<int>(label.size()) + 2;
+        const int x = state.width - w - 2;
+        if (x < 2) return;
+        const int index = static_cast<int>(state.actionHits.size());
+        WORD color = kAccent;
+        if (state.settingsOpen || state.hoveredAction == index)
+            color = state.hoveredAction == index && !state.settingsOpen
+                ? kHover : kSelected;
+        At(state, x, 1, L"[" + label + L"]", color, w);
+        state.actionHits.push_back({1, x, x + w - 1, NavAction::Settings});
+    }
+
     void EnsureItemVisible(State& state, int item) {
         const size_t row = ItemToRow(state, item);
         if (row == static_cast<size_t>(-1)) return;
@@ -471,6 +521,51 @@ namespace console_ui {
             At(state, 2, y, text, active ? kHover : kMuted, state.width - 4);
             state.suggestHits.push_back({y, 2, state.width - 3, i});
         }
+    }
+
+    // Settings dropdown anchored to the top-right corner. Painted last so
+    // it overlays page content, like the suggestion list.
+    void DrawSettingsMenu(State& state) {
+        state.settingsHits.clear();
+        if (!state.settingsOpen) return;
+        const auto& items = SettingsMenuItems();
+        const int w = std::min<int>(46, state.width - 4);
+        if (w < 22) { state.settingsOpen = false; return; }
+        const int left = state.width - 2 - w;
+        const int top = 2;
+        const int rows = static_cast<int>(items.size()) + 3; // +hint +borders
+        const int bottom = top + rows - 1;
+        state.settingsSel = std::clamp(state.settingsSel, 0,
+            static_cast<int>(items.size()) - 1);
+
+        At(state, left, top,
+           L"╭" + std::wstring(static_cast<size_t>(w - 2), L'─') + L"╮",
+           kAccent);
+        At(state, left, bottom,
+           L"╰" + std::wstring(static_cast<size_t>(w - 2), L'─') + L"╯",
+           kAccent);
+        for (int i = 0; i < static_cast<int>(items.size()); ++i) {
+            const int y = top + 1 + i;
+            At(state, left, y, L"│", kMuted);
+            At(state, left + w - 1, y, L"│", kMuted);
+            const bool sel = i == state.settingsSel ||
+                             i == state.settingsHover;
+            const WORD color = sel ? kHover : kText;
+            std::wstring label = Shorten(L"  " + items[i].label,
+                static_cast<size_t>(w - 4));
+            // Fill the whole row for the highlight, then draw the label.
+            At(state, left + 1, y,
+               std::wstring(static_cast<size_t>(w - 2), L' '), color);
+            At(state, left + 1, y, label, color);
+            state.settingsHits.push_back(
+                {y, left + 1, left + w - 2, i});
+        }
+        const int hintY = top + 1 + static_cast<int>(items.size());
+        At(state, left, hintY, L"│", kMuted);
+        At(state, left + w - 1, hintY, L"│", kMuted);
+        At(state, left + 1, hintY,
+           Shorten(L"  ↑↓ выбор   Enter — выполнить   Esc — закрыть",
+                   static_cast<size_t>(w - 4)), kMuted);
     }
 
     // Bookmark shortcuts shown on the home (new-tab) page.
@@ -585,6 +680,7 @@ namespace console_ui {
         const bool loading = g_loadRunning.load();
 
         DrawTabStrip(state); // row 0: browser tabs, always visible
+        DrawSettingsButton(state); // row 1, right edge: ⚙ Настройки
 
         if (!g_consolePageOpen) {
             state.focus = Focus::Search;
@@ -881,6 +977,7 @@ namespace console_ui {
 
         // Autocomplete dropdown paints last so it overlays page content.
         DrawSuggestions(state);
+        DrawSettingsMenu(state);
 
         const int cursorX = std::clamp(
             state.searchLeft + static_cast<int>(state.caret -
@@ -1142,9 +1239,67 @@ namespace console_ui {
             state.focus = Focus::Search;
             break;
         case NavAction::Reload: UiReload(); break;
+        case NavAction::Settings:
+            state.settingsOpen = !state.settingsOpen;
+            state.settingsSel = 0;
+            state.settingsHover = -1;
+            return; // don't steal focus / reset scroll for a menu toggle
         }
         if (action != NavAction::Home)
             state.focus = Focus::Page;
+    }
+
+    void Submit(State& state);
+
+    void ToggleTheme() {
+        g_lightTheme = !g_lightTheme;
+        ApplyPalette();
+        SaveThemeSetting();
+        g_consoleStatus = g_lightTheme
+            ? L"Светлая тема." : L"Тёмная тема.";
+    }
+
+    void PageFocusReset(State& state) {
+        state.selectedItem = -1;
+        state.hoveredItem = -1;
+        state.scrollOffset = 0;
+        state.focus = Focus::Page;
+    }
+
+    // Runs one entry of the ⚙ settings dropdown.
+    void ActivateSettingsItem(State& state, int index) {
+        state.settingsOpen = false;
+        state.settingsHover = -1;
+        const auto& items = SettingsMenuItems();
+        if (index < 0 || index >= static_cast<int>(items.size())) return;
+        switch (items[static_cast<size_t>(index)].action) {
+        case MenuAction::Theme:       ToggleTheme(); break;
+        case MenuAction::Downloads:
+            UiOpenInternalPage(L"downloads"); PageFocusReset(state); break;
+        case MenuAction::HistoryPg:
+            UiShowHistoryPage(); PageFocusReset(state); break;
+        case MenuAction::BookmarksPg:
+            UiShowBookmarksPage(); PageFocusReset(state); break;
+        case MenuAction::ClearHistory:   UiClearHistory(); break;
+        case MenuAction::ClearBookmarks: UiClearBookmarks(); break;
+        case MenuAction::ClearCache:     UiClearCache(); break;
+        case MenuAction::Export:         ExportBookmarksHtml(); break;
+        case MenuAction::SyncPush:       UiSync(L"push"); break;
+        case MenuAction::SyncPull:       UiSync(L"pull"); break;
+        case MenuAction::SyncStatus:     UiSync(L"status"); break;
+        case MenuAction::WikiPortal:     UiWiki(L"portal"); break;
+        case MenuAction::WebOff:
+            wv::Hide();
+            g_consoleStatus = L"WebView2-окно скрыто.";
+            break;
+        case MenuAction::Help:
+            state.input = L"help";
+            state.caret = state.input.size();
+            state.inputViewStart = 0;
+            state.focus = Focus::Search;
+            Submit(state);
+            break;
+        }
     }
 
     void FindNextOnPage(State& state) {
@@ -1438,6 +1593,37 @@ namespace console_ui {
             return;
         }
 
+        // Settings dropdown: arrows/J/K move, Enter runs, Esc closes.
+        // Any other key closes the menu and falls through to normal input.
+        if (state.settingsOpen) {
+            const int count =
+                static_cast<int>(SettingsMenuItems().size());
+            if (code == VK_ESCAPE) {
+                state.settingsOpen = false;
+                state.settingsHover = -1;
+                return;
+            }
+            if (code == VK_RETURN || code == VK_SPACE) {
+                ActivateSettingsItem(state, state.settingsSel);
+                return;
+            }
+            if (code == VK_UP ||
+                (!ctrl && !alt && code == 'K')) {
+                state.settingsSel =
+                    (state.settingsSel + count - 1) % count;
+                state.settingsHover = -1;
+                return;
+            }
+            if (code == VK_DOWN ||
+                (!ctrl && !alt && code == 'J')) {
+                state.settingsSel = (state.settingsSel + 1) % count;
+                state.settingsHover = -1;
+                return;
+            }
+            state.settingsOpen = false;
+            state.settingsHover = -1;
+        }
+
         // Embedded shell: Ctrl+` opens cmd.exe in this console.
         // Type `exit` (or close the shell) to return to the browser.
         if (ctrl && code == VK_OEM_3) {
@@ -1519,11 +1705,7 @@ namespace console_ui {
             return;
         }
         if (ctrl && shift && code == 'L') {
-            g_lightTheme = !g_lightTheme;
-            ApplyPalette();
-            SaveThemeSetting();
-            g_consoleStatus = g_lightTheme
-                ? L"Светлая тема." : L"Тёмная тема.";
+            ToggleTheme();
             return;
         }
         if (ctrl && shift && code == 'E' && !g_currentUrl.empty()) {
@@ -2008,13 +2190,20 @@ namespace console_ui {
                     if (y == hit.row && x >= hit.left && x <= hit.right) {
                         hoverSuggest = hit.index; break;
                     }
+            int hoverMenu = -1;
+            for (const auto& hit : state.settingsHits)
+                if (y == hit.row && x >= hit.left && x <= hit.right) {
+                    hoverMenu = hit.index; break;
+                }
             if (hoverItem != state.hoveredItem || hoverAction != state.hoveredAction ||
                 hoverButton != state.hoveredSearchButton ||
-                hoverSuggest != state.hoverSuggest) {
+                hoverSuggest != state.hoverSuggest ||
+                hoverMenu != state.settingsHover) {
                 state.hoveredItem = hoverItem;
                 state.hoveredAction = hoverAction;
                 state.hoveredSearchButton = hoverButton;
                 state.hoverSuggest = hoverSuggest;
+                state.settingsHover = hoverMenu;
                 if (hoverSuggest >= 0) state.suggestIndex = hoverSuggest;
             }
             return;
@@ -2022,6 +2211,13 @@ namespace console_ui {
         if (!isClick) return;
 
         RefreshSize(state);
+        // Settings dropdown rows (topmost overlay).
+        for (const auto& hit : state.settingsHits) {
+            if (y == hit.row && x >= hit.left && x <= hit.right) {
+                ActivateSettingsItem(state, hit.index);
+                return;
+            }
+        }
         // Autocomplete dropdown hits (they overlay content rows).
         for (const auto& hit : state.suggestHits) {
             if (y == hit.row && x >= hit.left && x <= hit.right &&
@@ -2101,6 +2297,11 @@ namespace console_ui {
         // Clicking in the page body gives the page keyboard focus for arrow scrolling.
         if (g_consolePageOpen && y >= 6 && y < state.height - 3)
             state.focus = Focus::Page;
+        // Any click that didn't hit the menu closes it.
+        if (state.settingsOpen) {
+            state.settingsOpen = false;
+            state.settingsHover = -1;
+        }
     }
 
     bool Run() {
