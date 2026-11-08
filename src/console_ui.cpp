@@ -209,7 +209,7 @@ namespace console_ui {
         Downloads, HistoryPg, BookmarksPg,
         ClearHistory, ClearBookmarks, ClearCache, Export,
         SyncPush, SyncPull, SyncStatus,
-        WikiPortal, WikiRandom, WebOff, Help,
+        WikiPortal, WikiRandom, WikiDlRu, WikiDlEn, WebOff, Help,
     };
     struct MenuItem { std::wstring label; MenuAction action; };
 
@@ -236,6 +236,8 @@ namespace console_ui {
             {L"Синхронизация: статус",             MenuAction::SyncStatus},
             {L"Wikipedia: открыть портал",         MenuAction::WikiPortal},
             {L"Wikipedia: случайная статья",       MenuAction::WikiRandom},
+            {L"Wikipedia: скачать RU (~200 МБ)",   MenuAction::WikiDlRu},
+            {L"Wikipedia: скачать EN (~200 МБ)",   MenuAction::WikiDlEn},
             {L"Скрыть WebView2-окно",              MenuAction::WebOff},
             {L"Справка",                           MenuAction::Help},
         };
@@ -548,6 +550,8 @@ namespace console_ui {
         state.searchBoxTop = row - 1;
         state.searchBoxBottom = row + 1;
         state.dropdownTop = row + 2; // suggestion dropdown starts below box
+        if (row > state.height / 2)
+            state.dropdownTop = std::max(2, row - 9); // bottom box: list above
         state.searchButtonLeft = -1;
         state.searchButtonRight = -1;
         // hoveredSearchButton is intentionally NOT reset here: it is
@@ -871,7 +875,11 @@ namespace console_ui {
             } else {
                 Center(state, center - 4, L"Browser", kBright);
             }
-            DrawSearchBox(state, center - 2);
+            // ":cmd" input renders as a bottom command line instead of
+            // the top omnibox (like Vim's command line).
+            const bool cmdLine = state.focus == Focus::Search &&
+                !state.input.empty() && state.input.front() == L':';
+            DrawSearchBox(state, cmdLine ? height - 5 : center - 2);
             Center(state, center + 2,
                    L"Введите запрос или адрес  ·  Enter  ·  wiki: статья  ·  :команда", kMuted);
             Center(state, center + 4,
@@ -905,7 +913,9 @@ namespace console_ui {
                 navX = DrawNavButton(state, navX, L"⌂ Домой", NavAction::Home, true, 1);
                 navX = DrawNavButton(state, navX, L"↻ Обновить", NavAction::Reload, canReload, 1);
             }
-            DrawSearchBox(state, 3);
+            const bool cmdLine = state.focus == Focus::Search &&
+                !state.input.empty() && state.input.front() == L':';
+            DrawSearchBox(state, cmdLine ? height - 5 : 3);
 
             const size_t textLimit = std::min<size_t>(g_currentText.size(), MAX_DISPLAY_CHARS);
             const std::wstring pageText = ToWide(g_currentText.substr(0, textLimit));
@@ -1512,6 +1522,8 @@ namespace console_ui {
         case MenuAction::SyncStatus:     UiSync(L"status"); break;
         case MenuAction::WikiPortal:     UiWiki(L"portal"); break;
         case MenuAction::WikiRandom:     UiWiki(L"random"); break;
+        case MenuAction::WikiDlRu:       UiWiki(L"download ru 200mb"); break;
+        case MenuAction::WikiDlEn:       UiWiki(L"download en 200mb"); break;
         case MenuAction::WebOff:
             wv::Hide();
             g_consoleStatus = L"WebView2-окно скрыто.";
@@ -1592,6 +1604,9 @@ namespace console_ui {
 
     void Submit(State& state) {
         std::wstring value = TrimWide(state.input);
+        // ':' command prefix — strip so ":back" behaves like "back".
+        if (!value.empty() && value.front() == L':')
+            value = TrimWide(value.substr(1));
         state.input.clear();
         state.caret = 0;
         state.inputViewStart = 0;
@@ -2228,6 +2243,15 @@ namespace console_ui {
                 state.hoveredItem = -1;
             };
 
+            if (ch == L':') { // bottom command line (Vim-style)
+                state.input = L":";
+                state.caret = 1;
+                state.inputViewStart = 0;
+                state.findMode = false;
+                state.focus = Focus::Search;
+                state.browsingHistory = false;
+                return;
+            }
             if (lowerCh == L'j') { moveItems(1); return; }
             if (lowerCh == L'k') { moveItems(-1); return; }
             if (code == VK_SPACE) {
