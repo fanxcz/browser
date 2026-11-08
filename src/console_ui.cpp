@@ -25,19 +25,16 @@ namespace console_ui {
         (FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE) |
             BACKGROUND_BLUE                                     // hover
     };
-    // Light theme: dark text on a light-gray cell background.
+    // Light theme: black text everywhere on a light-gray cell background.
     const WORD kLightBg = BACKGROUND_RED | BACKGROUND_GREEN |
                           BACKGROUND_BLUE;                      // gray
     const Palette kLightPalette{
-        FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE,   // text (dark)
-        FOREGROUND_BLUE,                                       // muted
-        FOREGROUND_BLUE | FOREGROUND_INTENSITY,                // accent
-        FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE |
-            FOREGROUND_INTENSITY,                              // bright
-        (FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE) |
-            BACKGROUND_BLUE,                                    // selected
-        (FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE) |
-            BACKGROUND_GREEN | BACKGROUND_INTENSITY              // hover
+        0,                                                    // text (black)
+        0,                                                    // muted (black)
+        0,                                                    // accent (black)
+        0,                                                    // bright (black)
+        BACKGROUND_BLUE,                                      // selected
+        BACKGROUND_GREEN | BACKGROUND_INTENSITY                // hover
     };
     bool g_lightTheme = false;
 
