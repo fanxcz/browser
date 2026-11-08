@@ -299,6 +299,13 @@ namespace console_ui {
         size_t scrollOffset = 0;
         size_t pageLineCount = 0;
         int pageCapacity = 0;
+        // Text selection: absolute page-line range. Set by mouse drag over
+        // plain text, or by V-mode where j/k move the cursor and y copies.
+        bool selectMode = false;
+        bool selDragging = false;
+        long selAnchor = -1;
+        long selCursor = -1;
+        std::vector<std::wstring> selLines;
         // <meta http-equiv="refresh"> auto-reload timer.
         int refreshSeconds = 0;
         int refreshInterval = 0;   // >0: repeating interval (reload N)
@@ -380,8 +387,11 @@ namespace console_ui {
                 state.editingField};
     }
 
+    void ClearSelection(State& state); // defined below, near PageLine
+
     void ApplyView(State& state, const TabViewState& view) {
         CloseImageViewer(state);
+        ClearSelection(state);
         state.scrollOffset = view.scrollOffset;
         state.selectedItem = view.selectedItem;
         state.hoveredItem = -1;
@@ -806,6 +816,62 @@ namespace console_ui {
         bool heading = false;
     };
 
+    void ClearSelection(State& state) {
+        state.selectMode = false;
+        state.selDragging = false;
+        state.selAnchor = -1;
+        state.selCursor = -1;
+        state.selLines.clear();
+    }
+
+    bool HasSelection(const State& state) {
+        return state.selAnchor >= 0 && state.selCursor >= 0 &&
+               state.selAnchor != state.selCursor;
+    }
+
+    // Join the selected page lines into plain text for the clipboard.
+    std::wstring SelectedText(const State& state) {
+        if (!HasSelection(state)) return {};
+        const long lo = std::min(state.selAnchor, state.selCursor);
+        const long hi = std::max(state.selAnchor, state.selCursor);
+        std::wstring out;
+        for (long i = lo; i <= hi; ++i) {
+            if (i < 0 || i >= static_cast<long>(state.selLines.size()))
+                continue;
+            if (!out.empty()) out += L'\n';
+            out += state.selLines[static_cast<size_t>(i)];
+        }
+        return out;
+    }
+
+    void CopySelectionOrUrl(State& state) {
+        const std::wstring sel = SelectedText(state);
+        if (!sel.empty()) {
+            if (UiCopyToClipboard(sel)) {
+                g_consoleStatus = L"Выделенный текст скопирован (" +
+                    std::to_wstring(sel.size()) + L" симв.).";
+                return;
+            }
+        }
+        // Fall back to the previous behaviour: link/image URL or page URL.
+        std::wstring toCopy = g_currentUrl;
+        if (state.selectedItem >= 0) {
+            if (static_cast<size_t>(state.selectedItem) < g_currentLinks.size())
+                toCopy = g_currentLinks[
+                    static_cast<size_t>(state.selectedItem)].url;
+            else {
+                const int img = ImageIndexForItem(state, state.selectedItem);
+                if (img >= 0)
+                    toCopy = g_currentImages[
+                        static_cast<size_t>(img)].url;
+            }
+        }
+        if (!toCopy.empty() && UiCopyToClipboard(toCopy))
+            g_consoleStatus = L"Ссылка скопирована в буфер обмена.";
+        else
+            g_consoleStatus = L"Нечего копировать.";
+    }
+
     void Render(State& state) {
         RefreshSize(state);
         Clear(state);
@@ -1063,6 +1129,14 @@ namespace console_ui {
             // collides with it.
             const int capacity = std::max(1, footerRow - 1 - contentTop);
             state.pageLineCount = pageLines.size();
+            // Snapshot line texts while a selection exists so SelectedText()
+            // can join them after this frame's local vector is gone.
+            if (state.selectMode || state.selAnchor >= 0) {
+                state.selLines.clear();
+                state.selLines.reserve(pageLines.size());
+                for (const auto& l : pageLines)
+                    state.selLines.push_back(l.text);
+            }
             state.pageCapacity = capacity;
             const size_t maxOffset = pageLines.size() > static_cast<size_t>(capacity)
                 ? pageLines.size() - static_cast<size_t>(capacity) : 0;
@@ -1075,6 +1149,9 @@ namespace console_ui {
                 if (fi >= 0) EnsureItemVisible(state, fi);
             }
 
+            const long selLo = std::min(state.selAnchor, state.selCursor);
+            const long selHi = std::max(state.selAnchor, state.selCursor);
+            const bool selActive = state.selAnchor >= 0;
             for (int visible = 0; visible < capacity; ++visible) {
                 const size_t lineIndex = state.scrollOffset + static_cast<size_t>(visible);
                 if (lineIndex >= pageLines.size()) break;
@@ -1097,10 +1174,19 @@ namespace console_ui {
                        highlighted ? kHover : kText, width - 4);
                     state.itemRows.push_back({y, line.itemIndex});
                 }
-                if (line.itemIndex >= 0)
+                const bool inSel = selActive &&
+                    static_cast<long>(lineIndex) >= selLo &&
+                    static_cast<long>(lineIndex) <= selHi;
+                if (inSel) {
+                    // Selected range: full-width highlight like a browser.
+                    At(state, 2, y, std::wstring(std::max(0, width - 4), L' '),
+                       kSelected, width - 4);
+                    At(state, 4, y, line.text, kSelected, width - 8);
+                } else if (line.itemIndex >= 0) {
                     At(state, 4, y, line.text, color, width - 8);
-                else
+                } else {
                     DrawText(state, 4, y, line.text, color, state.findQuery);
+                }
             }
 
             const std::wstring position = pageLines.empty() ? L"" :
@@ -1493,6 +1579,7 @@ namespace console_ui {
         state.hoveredItem = -1;
         state.scrollOffset = 0;
         state.focus = Focus::Page;
+        ClearSelection(state);
     }
 
     // Runs one entry of the ⚙ settings dropdown.
@@ -1797,7 +1884,7 @@ namespace console_ui {
         if (lower == L"bookmarks-clear") { UiClearBookmarks(); return; }
         if (lower == L"cache-clear") { UiClearCache(); return; }
         if (lower == L"help") {
-            g_consoleStatus = L"Запрос или адрес + Enter. Команды: back, forward, reload, home, history, bookmarks, downloads, download <url> [имя], edge <url>, web [url|back|find <т>], ai [@] <вопрос>, ai sum, stop, bookmark add, stats, tabs, dup, reopen, copy, source, info, reader, md, backup, session, clear-history, clear-history-older <дн>, export, import <файл>, bookmarks-clear, cache-clear, exit. Клавиши на странице: j/k, Enter, o, /, b/f, g/G, u — исходник, i — инфо, h — история, n/w — вкладки, ,/. — навигация, s — сохранить (Shift+S — markdown), a — закладка, e — внешний браузер, v — вставить, c — копировать ссылку, z/Ctrl+Shift+C — текст страницы, y — копировать URL, F3 — следующее совпадение, ? — справка.";
+            g_consoleStatus = L"Запрос или адрес + Enter. Команды: back, forward, reload, home, history, bookmarks, downloads, download <url> [имя], edge <url>, web [url|back|find <т>], ai [@] <вопрос>, ai sum, stop, bookmark add, stats, tabs, dup, reopen, copy, source, info, reader, md, backup, session, clear-history, clear-history-older <дн>, export, import <файл>, bookmarks-clear, cache-clear, exit. Клавиши на странице: j/k, Enter, o, /, b/f, g/G, u — исходник, i — инфо, h — история, n/w — вкладки, ,/. — навигация, s — сохранить (Shift+S — markdown), a — закладка, e — внешний браузер, v — вставить, c — копировать ссылку, z/Ctrl+Shift+C — текст страницы, V — выделение мышью/клавиатами + y — копировать, F3 — следующее совпадение, ? — справка.";
             return;
         }
         if (lower == L"stats") { UiShowStats(); return; }
@@ -2013,24 +2100,8 @@ namespace console_ui {
             return;
         }
         if (ctrl && code == 'C') {
-            // Copy the selected link/image URL; with no selection, the page URL.
-            std::wstring toCopy = g_currentUrl;
-            if (state.selectedItem >= 0) {
-                if (static_cast<size_t>(state.selectedItem) <
-                    g_currentLinks.size())
-                    toCopy = g_currentLinks[
-                        static_cast<size_t>(state.selectedItem)].url;
-                else {
-                    const int img = ImageIndexForItem(state, state.selectedItem);
-                    if (img >= 0)
-                        toCopy = g_currentImages[
-                            static_cast<size_t>(img)].url;
-                }
-            }
-            if (!toCopy.empty() && UiCopyToClipboard(toCopy))
-                g_consoleStatus = L"Ссылка скопирована в буфер обмена.";
-            else
-                g_consoleStatus = L"Нечего копировать.";
+            // Text selection first; otherwise link/image URL, else page URL.
+            CopySelectionOrUrl(state);
             return;
         }
         if (ctrl && shift && code == 'C') {
@@ -2195,6 +2266,9 @@ namespace console_ui {
                 // Keep findQuery so matches stay highlighted until the next
                 // search or navigation, like in a regular browser.
                 state.focus = Focus::Page;
+            } else if (state.selAnchor >= 0) {
+                // Esc clears an active text selection first.
+                ClearSelection(state);
             } else if (!state.input.empty()) {
                 state.input.clear(); state.caret = 0; state.inputViewStart = 0;
                 state.browsingHistory = false;
@@ -2310,6 +2384,66 @@ namespace console_ui {
                 state.hoveredItem = -1;
             };
 
+            // V toggles text-selection mode; while active j/k/g/G move the
+            // selection cursor line-wise and y copies the range.
+            if (ch == L'V') {
+                if (state.selectMode) {
+                    state.selectMode = false;
+                    if (!HasSelection(state)) ClearSelection(state);
+                } else {
+                    state.selectMode = true;
+                    state.selAnchor = state.selCursor =
+                        static_cast<long>(state.scrollOffset);
+                    state.selectedItem = -1;
+                    state.hoveredItem = -1;
+                    g_consoleStatus =
+                        L"Выделение: j/k — курсор, y — копировать, V/Esc — выход.";
+                }
+                return;
+            }
+            if (state.selectMode) {
+                const auto moveSel = [&](long delta) {
+                    const size_t total = state.selLines.empty()
+                        ? state.pageLineCount : state.selLines.size();
+                    if (total == 0) return;
+                    const long maxLine = static_cast<long>(total) - 1;
+                    long c = state.selCursor < 0
+                        ? static_cast<long>(state.scrollOffset) : state.selCursor;
+                    state.selCursor = std::clamp(c + delta, 0L, maxLine);
+                    const int cap = state.pageCapacity > 0
+                        ? state.pageCapacity : 20;
+                    if (state.selCursor < static_cast<long>(state.scrollOffset))
+                        state.scrollOffset = static_cast<size_t>(state.selCursor);
+                    else if (state.selCursor >=
+                             static_cast<long>(state.scrollOffset) + cap)
+                        state.scrollOffset = static_cast<size_t>(
+                            state.selCursor) - static_cast<size_t>(cap) + 1;
+                };
+                if (lowerCh == L'j') { moveSel(1); return; }
+                if (lowerCh == L'k') { moveSel(-1); return; }
+                if (lowerCh == L'g' && !shift) {
+                    state.selCursor = 0; state.scrollOffset = 0; return;
+                }
+                if (lowerCh == L'g' && shift) {
+                    const size_t total = state.selLines.empty()
+                        ? state.pageLineCount : state.selLines.size();
+                    state.selCursor = total ? static_cast<long>(total) - 1 : 0;
+                    const size_t cap = static_cast<size_t>(
+                        std::max(1, state.pageCapacity));
+                    state.scrollOffset = total > cap ? total - cap : 0;
+                    return;
+                }
+                if (lowerCh == L'y') { // copy the selected range
+                    const std::wstring sel = SelectedText(state);
+                    if (!sel.empty() && UiCopyToClipboard(sel))
+                        g_consoleStatus = L"Выделенный текст скопирован (" +
+                            std::to_wstring(sel.size()) + L" симв.).";
+                    else
+                        g_consoleStatus = L"Выделите диапазон (якорь ≠ курсор).";
+                    return;
+                }
+                // Other keys fall through to normal page commands.
+            }
             if (lowerCh == L'j') { moveItems(1); return; }
             if (lowerCh == L'k') { moveItems(-1); return; }
             if (code == VK_SPACE) {
@@ -2517,27 +2651,7 @@ namespace console_ui {
             if (ch == L'S') { UiSavePageMarkdown(); return; } // Shift+S
             if (lowerCh == L's') { UiSavePage(); return; }
             if (lowerCh == L'a') { UiBookmark(); return; }
-            if (lowerCh == L'c') { // copy selected link/image URL, else page URL
-                std::wstring toCopy = g_currentUrl;
-                if (state.selectedItem >= 0) {
-                    if (static_cast<size_t>(state.selectedItem) <
-                        g_currentLinks.size())
-                        toCopy = g_currentLinks[
-                            static_cast<size_t>(state.selectedItem)].url;
-                    else {
-                        const int img = ImageIndexForItem(state,
-                            state.selectedItem);
-                        if (img >= 0)
-                            toCopy = g_currentImages[
-                                static_cast<size_t>(img)].url;
-                    }
-                }
-                if (!toCopy.empty() && UiCopyToClipboard(toCopy))
-                    g_consoleStatus = L"Ссылка скопирована в буфер обмена.";
-                else
-                    g_consoleStatus = L"Нечего копировать.";
-                return;
-            }
+            if (lowerCh == L'c') { CopySelectionOrUrl(state); return; }
             if (lowerCh == L'z') { // copy the whole page text
                 if (!g_currentText.empty() &&
                     UiCopyToClipboard(ToWide(g_currentText)))
@@ -2693,6 +2807,19 @@ namespace console_ui {
             (mouse.dwButtonState & FROM_LEFT_1ST_BUTTON_PRESSED) != 0;
 
         if (mouse.dwEventFlags == MOUSE_MOVED) {
+            // Drag-selection: button held over page text extends the range.
+            if (state.selDragging &&
+                (mouse.dwButtonState & FROM_LEFT_1ST_BUTTON_PRESSED) != 0 &&
+                g_consolePageOpen && y >= 6) {
+                const size_t total = state.selLines.empty()
+                    ? state.pageLineCount : state.selLines.size();
+                if (total > 0) {
+                    long line = static_cast<long>(state.scrollOffset) + (y - 6);
+                    state.selCursor = std::clamp(line, 0L,
+                        static_cast<long>(total) - 1);
+                }
+                return;
+            }
             int hoverItem = -1;
             for (const auto& row : state.itemRows)
                 if (y == row.row) { hoverItem = row.item; break; }
@@ -2733,6 +2860,16 @@ namespace console_ui {
                 state.settingsHover = hoverMenu;
                 if (hoverSuggest >= 0) state.suggestIndex = hoverSuggest;
             }
+            return;
+        }
+        // Left-button release ends a drag selection (release itself is not
+        // a click — presses are handled below).
+        if (state.selDragging &&
+            (mouse.dwButtonState & (FROM_LEFT_1ST_BUTTON_PRESSED |
+                                    FROM_LEFT_2ND_BUTTON_PRESSED)) == 0) {
+            state.selDragging = false;
+            // A click without a drag leaves no range — leave select mode.
+            if (!HasSelection(state)) state.selectMode = false;
             return;
         }
         if (!isClick) return;
@@ -2811,6 +2948,27 @@ namespace console_ui {
                 state.inputViewStart + static_cast<size_t>(relative));
             state.browsingHistory = false;
             return;
+        }
+        // Press on plain page text starts a drag selection; presses on
+        // links/fields below still activate the item immediately.
+        if (g_consolePageOpen && y >= 6 && y < state.height - 3) {
+            bool onItem = false;
+            for (const auto& r : state.itemRows)
+                if (r.row == y) { onItem = true; break; }
+            if (!onItem && state.pageLineCount > 0) {
+                state.selectMode = true;
+                state.selDragging = true;
+                const long line = static_cast<long>(state.scrollOffset) + (y - 6);
+                const long maxLine = static_cast<long>(
+                    state.selLines.empty() ? state.pageLineCount
+                                           : state.selLines.size()) - 1;
+                state.selAnchor = state.selCursor =
+                    std::clamp(line, 0L, std::max(0L, maxLine));
+                state.selectedItem = -1;
+                state.hoveredItem = -1;
+                state.focus = Focus::Page;
+                return;
+            }
         }
         for (const auto& row : state.itemRows) {
             if (y == row.row) {
