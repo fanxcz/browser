@@ -82,16 +82,26 @@ namespace console_ui {
 
     // Settings dropdown (top-right "⚙" button) — mouse + keyboard.
     enum class MenuAction {
-        Theme, Downloads, HistoryPg, BookmarksPg,
+        Theme, PageInfo, ViewSource, CopyUrl, External,
+        NewTab, CloseTab, NextTab, PrevTab,
+        Downloads, HistoryPg, BookmarksPg,
         ClearHistory, ClearBookmarks, ClearCache, Export,
         SyncPush, SyncPull, SyncStatus,
-        WikiPortal, WebOff, Help,
+        WikiPortal, WikiRandom, WebOff, Help,
     };
     struct MenuItem { std::wstring label; MenuAction action; };
 
     const std::vector<MenuItem>& SettingsMenuItems() {
         static const std::vector<MenuItem> items = {
             {L"Переключить тему (светлая/тёмная)", MenuAction::Theme},
+            {L"Информация о странице",             MenuAction::PageInfo},
+            {L"Исходный код страницы",             MenuAction::ViewSource},
+            {L"Копировать URL страницы",           MenuAction::CopyUrl},
+            {L"Открыть во внешнем браузере",       MenuAction::External},
+            {L"Новая вкладка",                     MenuAction::NewTab},
+            {L"Закрыть вкладку",                   MenuAction::CloseTab},
+            {L"Следующая вкладка",                 MenuAction::NextTab},
+            {L"Предыдущая вкладка",                MenuAction::PrevTab},
             {L"Загрузки",                          MenuAction::Downloads},
             {L"История",                           MenuAction::HistoryPg},
             {L"Закладки",                          MenuAction::BookmarksPg},
@@ -103,6 +113,7 @@ namespace console_ui {
             {L"Синхронизация: получить (pull)",    MenuAction::SyncPull},
             {L"Синхронизация: статус",             MenuAction::SyncStatus},
             {L"Wikipedia: открыть портал",         MenuAction::WikiPortal},
+            {L"Wikipedia: случайная статья",       MenuAction::WikiRandom},
             {L"Скрыть WebView2-окно",              MenuAction::WebOff},
             {L"Справка",                           MenuAction::Help},
         };
@@ -151,6 +162,7 @@ namespace console_ui {
         bool settingsOpen = false;
         int settingsSel = 0;                   // keyboard-selected item
         int settingsHover = -1;                // hovered item (-1 none)
+        int settingsScroll = 0;                // first visible menu row
         std::vector<SuggestHit> settingsHits;
         bool homeBookmarksShown = false;
         // Full-screen image viewer (truecolor half-block rendering).
@@ -533,19 +545,32 @@ namespace console_ui {
         if (w < 22) { state.settingsOpen = false; return; }
         const int left = state.width - 2 - w;
         const int top = 2;
-        const int rows = static_cast<int>(items.size()) + 3; // +hint +borders
+        // The menu scrolls when it would not fit above the footer.
+        const int maxRows = std::max(4, state.height - top - 5);
+        const int total = static_cast<int>(items.size());
+        state.settingsSel = std::clamp(state.settingsSel, 0, total - 1);
+        if (state.settingsSel < state.settingsScroll)
+            state.settingsScroll = state.settingsSel;
+        if (state.settingsSel >= state.settingsScroll + maxRows)
+            state.settingsScroll = state.settingsSel - maxRows + 1;
+        state.settingsScroll = std::clamp(state.settingsScroll, 0,
+            std::max(0, total - maxRows));
+        const int first = state.settingsScroll;
+        const int last = std::min(total, first + maxRows);
+        const int drawn = last - first;
+        const int rows = drawn + 3; // +hint +borders
         const int bottom = top + rows - 1;
-        state.settingsSel = std::clamp(state.settingsSel, 0,
-            static_cast<int>(items.size()) - 1);
+        const bool scrollable = total > maxRows;
 
         At(state, left, top,
-           L"╭" + std::wstring(static_cast<size_t>(w - 2), L'─') + L"╮",
+           L"╭" + std::wstring(static_cast<size_t>(w - 2), L'─') +
+               (scrollable ? L" ↑↓" : L"") + L"╮",
            kAccent);
         At(state, left, bottom,
            L"╰" + std::wstring(static_cast<size_t>(w - 2), L'─') + L"╯",
            kAccent);
-        for (int i = 0; i < static_cast<int>(items.size()); ++i) {
-            const int y = top + 1 + i;
+        for (int i = first; i < last; ++i) {
+            const int y = top + 1 + (i - first);
             At(state, left, y, L"│", kMuted);
             At(state, left + w - 1, y, L"│", kMuted);
             const bool sel = i == state.settingsSel ||
@@ -560,12 +585,18 @@ namespace console_ui {
             state.settingsHits.push_back(
                 {y, left + 1, left + w - 2, i});
         }
-        const int hintY = top + 1 + static_cast<int>(items.size());
+        const int hintY = top + 1 + drawn;
         At(state, left, hintY, L"│", kMuted);
         At(state, left + w - 1, hintY, L"│", kMuted);
+        std::wstring hint = scrollable
+            ? L"  ↑↓ выбор · колёсико — прокрутка"
+            : L"  ↑↓ выбор   Enter — выполнить   Esc — закрыть";
+        if (scrollable)
+            hint += L"  (" + std::to_wstring(first + 1) + L"-" +
+                    std::to_wstring(last) + L"/" +
+                    std::to_wstring(total) + L")";
         At(state, left + 1, hintY,
-           Shorten(L"  ↑↓ выбор   Enter — выполнить   Esc — закрыть",
-                   static_cast<size_t>(w - 4)), kMuted);
+           Shorten(hint, static_cast<size_t>(w - 4)), kMuted);
     }
 
     // Bookmark shortcuts shown on the home (new-tab) page.
@@ -967,6 +998,22 @@ namespace console_ui {
             At(state, 2, height - 3,
                Shorten(status, static_cast<size_t>(width - 4)),
                loading ? kAccent : kMuted, width - 4);
+            // Scroll position indicator, right-aligned on the status row.
+            if (state.pageLineCount > static_cast<size_t>(state.pageCapacity)) {
+                const size_t cap = static_cast<size_t>(state.pageCapacity);
+                const size_t pages =
+                    (state.pageLineCount + cap - 1) / cap;
+                const size_t cur = std::min(pages,
+                    state.scrollOffset / cap + 1);
+                const size_t maxOff = state.pageLineCount - cap;
+                const int pct = maxOff
+                    ? static_cast<int>(state.scrollOffset * 100 / maxOff) : 0;
+                const std::wstring ind = L"стр " +
+                    std::to_wstring(cur) + L"/" + std::to_wstring(pages) +
+                    L" · " + std::to_wstring(pct) + L"%";
+                At(state, width - static_cast<int>(ind.size()) - 2,
+                   height - 3, ind, kMuted);
+            }
             const std::wstring footer = width >= 100
                 ? L"j/k — ссылки/поля   Enter — открыть   Ctrl+Enter — форма   o — адрес   / — найти   b/f — история   g/G — края   Пробел — листать   Ctrl+T/W — вкладки"
                 : width >= 78
@@ -1243,6 +1290,7 @@ namespace console_ui {
             state.settingsOpen = !state.settingsOpen;
             state.settingsSel = 0;
             state.settingsHover = -1;
+            state.settingsScroll = 0;
             return; // don't steal focus / reset scroll for a menu toggle
         }
         if (action != NavAction::Home)
@@ -1274,6 +1322,23 @@ namespace console_ui {
         if (index < 0 || index >= static_cast<int>(items.size())) return;
         switch (items[static_cast<size_t>(index)].action) {
         case MenuAction::Theme:       ToggleTheme(); break;
+        case MenuAction::PageInfo:    UiPageInfoPage(); break;
+        case MenuAction::ViewSource:  UiViewSourcePage(); break;
+        case MenuAction::CopyUrl:
+            if (!g_currentUrl.empty() && UiCopyToClipboard(g_currentUrl))
+                g_consoleStatus = L"URL страницы скопирован.";
+            else
+                g_consoleStatus = L"Нечего копировать.";
+            break;
+        case MenuAction::External:    UiOpenExternalBrowser(); break;
+        case MenuAction::NewTab:
+            ApplyView(state, UiNewTab(CurrentView(state))); break;
+        case MenuAction::CloseTab:
+            ApplyView(state, UiCloseTab(CurrentView(state))); break;
+        case MenuAction::NextTab:
+            ApplyView(state, UiCycleTab(1, CurrentView(state))); break;
+        case MenuAction::PrevTab:
+            ApplyView(state, UiCycleTab(-1, CurrentView(state))); break;
         case MenuAction::Downloads:
             UiOpenInternalPage(L"downloads"); PageFocusReset(state); break;
         case MenuAction::HistoryPg:
@@ -1288,6 +1353,7 @@ namespace console_ui {
         case MenuAction::SyncPull:       UiSync(L"pull"); break;
         case MenuAction::SyncStatus:     UiSync(L"status"); break;
         case MenuAction::WikiPortal:     UiWiki(L"portal"); break;
+        case MenuAction::WikiRandom:     UiWiki(L"random"); break;
         case MenuAction::WebOff:
             wv::Hide();
             g_consoleStatus = L"WebView2-окно скрыто.";
@@ -1543,9 +1609,20 @@ namespace console_ui {
         if (lower == L"bookmarks-clear") { UiClearBookmarks(); return; }
         if (lower == L"cache-clear") { UiClearCache(); return; }
         if (lower == L"help") {
-            g_consoleStatus = L"Запрос или адрес + Enter. Команды: back, forward, reload, home, history, bookmarks, downloads, download <url> [имя], edge <url>, web [url|back|find <т>], wiki <запрос>|download ru|en, stop, bookmark add, clear-history, clear-history-older <дн>, export, import <файл>, bookmarks-clear, cache-clear, exit.";
+            g_consoleStatus = L"Запрос или адрес + Enter. Команды: back, forward, reload, home, history, bookmarks, downloads, download <url> [имя], edge <url>, web [url|back|find <т>], wiki <запрос>|random|download ru|en, stop, bookmark add, stats, tabs, copy, source, info, clear-history, clear-history-older <дн>, export, import <файл>, bookmarks-clear, cache-clear, exit. Клавиши на странице: j/k, Enter, o, /, b/f, g/G, u — исходник, i — инфо, h — история, n/w — вкладки, ,/. — навигация, s — сохранить, a — закладка, e — внешний браузер, v — вставить, z — копировать текст, ? — справка.";
             return;
         }
+        if (lower == L"stats") { UiShowStats(); return; }
+        if (lower == L"tabs") { UiShowTabs(); return; }
+        if (lower == L"copy") {
+            if (!g_currentUrl.empty() && UiCopyToClipboard(g_currentUrl))
+                g_consoleStatus = L"URL страницы скопирован.";
+            else
+                g_consoleStatus = L"Нечего копировать.";
+            return;
+        }
+        if (lower == L"source") { UiViewSourcePage(); return; }
+        if (lower == L"info") { UiPageInfoPage(); return; }
         if (lower.rfind(L"search ", 0) == 0) {
             value = TrimWide(value.substr(7));
         } else if (lower.rfind(L"open ", 0) == 0) {
@@ -1635,8 +1712,9 @@ namespace console_ui {
             return;
         }
 
-        // Ctrl+L also cancels field editing.
-        if (ctrl && code == 'L') {
+        // Ctrl+L also cancels field editing. (!shift — Ctrl+Shift+L is the
+        // theme toggle below; VK_L is the same for both.)
+        if (ctrl && !shift && code == 'L') {
             state.editingField = -1;
             state.input.clear(); state.caret = 0; state.inputViewStart = 0;
             state.findMode = false;
@@ -1648,6 +1726,18 @@ namespace console_ui {
         if (ctrl && code == 'T') {
             ApplyView(state, shift ? UiReopenClosedTab(CurrentView(state))
                                    : UiNewTab(CurrentView(state)));
+            return;
+        }
+        if (ctrl && code == 'N') {
+            ApplyView(state, UiNewTab(CurrentView(state)));
+            return;
+        }
+        if (code == VK_F1) {
+            state.input = L"help";
+            state.caret = state.input.size();
+            state.inputViewStart = 0;
+            state.focus = Focus::Search;
+            Submit(state);
             return;
         }
         if (ctrl && code == 'W') {
@@ -1978,8 +2068,11 @@ namespace console_ui {
                 UiToggleDownloadPause();
                 return;
             }
-            if (lowerCh == L'e' && g_currentUrl == L"browser://downloads") {
-                UiOpenDownloadsFolder();
+            if (lowerCh == L'e') {
+                if (g_currentUrl == L"browser://downloads")
+                    UiOpenDownloadsFolder();
+                else
+                    UiOpenExternalBrowser(); // open page in system browser
                 return;
             }
             if (lowerCh == L'x' && g_currentUrl == L"browser://downloads") {
@@ -1998,19 +2091,34 @@ namespace console_ui {
                 }
                 return;
             }
-            if (lowerCh == L'v' && g_currentUrl == L"browser://downloads") {
-                // Verify the selected download against its .sha256 sidecar.
-                if (state.selectedItem >= 0 &&
-                    static_cast<size_t>(state.selectedItem) <
-                        g_currentLinks.size()) {
-                    const std::wstring u =
-                        g_currentLinks[static_cast<size_t>(state.selectedItem)].url;
-                    if (u.rfind(L"openfile://", 0) == 0)
-                        UiVerifyDownloadedFile(u.substr(11));
-                    else
-                        g_consoleStatus = L"Выберите файл в списке загрузок.";
+            if (lowerCh == L'v') {
+                if (g_currentUrl == L"browser://downloads") {
+                    // Verify the selected download against its .sha256 sidecar.
+                    if (state.selectedItem >= 0 &&
+                        static_cast<size_t>(state.selectedItem) <
+                            g_currentLinks.size()) {
+                        const std::wstring u =
+                            g_currentLinks[static_cast<size_t>(state.selectedItem)].url;
+                        if (u.rfind(L"openfile://", 0) == 0)
+                            UiVerifyDownloadedFile(u.substr(11));
+                        else
+                            g_consoleStatus = L"Выберите файл в списке загрузок.";
+                    } else {
+                        g_consoleStatus = L"Сначала выберите файл (j/k).";
+                    }
+                    return;
+                }
+                // On a normal page: paste the clipboard into the omnibox.
+                const std::wstring clip = UiGetClipboardText();
+                if (!clip.empty()) {
+                    state.input = clip;
+                    state.caret = clip.size();
+                    state.inputViewStart = 0;
+                    state.browsingHistory = false;
+                    state.suggestIndex = -1;
+                    state.focus = Focus::Search;
                 } else {
-                    g_consoleStatus = L"Сначала выберите файл (j/k).";
+                    g_consoleStatus = L"Буфер обмена пуст.";
                 }
                 return;
             }
@@ -2060,6 +2168,86 @@ namespace console_ui {
                     state.scrollOffset = 0;
                 }
                 state.selectedItem = -1; state.hoveredItem = -1;
+                return;
+            }
+            // [ / ] — previous / next tab (like browsers' Ctrl+Tab pair).
+            if (code == VK_OEM_4) {
+                ApplyView(state, UiCycleTab(-1, CurrentView(state)));
+                return;
+            }
+            if (code == VK_OEM_6) {
+                ApplyView(state, UiCycleTab(1, CurrentView(state)));
+                return;
+            }
+            // , / . — back / forward (Vim-style).
+            if (lowerCh == L',') { ActivateAction(state, NavAction::Back); return; }
+            if (lowerCh == L'.') { ActivateAction(state, NavAction::Forward); return; }
+            // l — focus the address bar (same as o).
+            if (lowerCh == L'l') {
+                state.input.clear(); state.caret = 0; state.inputViewStart = 0;
+                state.findMode = false;
+                state.focus = Focus::Search; state.browsingHistory = false;
+                return;
+            }
+            if (lowerCh == L'u') { UiViewSourcePage(); return; }
+            if (lowerCh == L'i') { UiPageInfoPage(); return; }
+            if (lowerCh == L'h') {
+                UiShowHistoryPage();
+                state.selectedItem = -1; state.hoveredItem = -1;
+                state.scrollOffset = 0; state.focus = Focus::Page;
+                return;
+            }
+            if (lowerCh == L'n') {
+                ApplyView(state, UiNewTab(CurrentView(state)));
+                return;
+            }
+            if (lowerCh == L'w') {
+                ApplyView(state, UiCloseTab(CurrentView(state)));
+                return;
+            }
+            if (lowerCh == L'q') {
+                UiOpenInternalPage(L"downloads");
+                state.selectedItem = -1; state.hoveredItem = -1;
+                state.scrollOffset = 0; state.focus = Focus::Page;
+                return;
+            }
+            if (lowerCh == L's') { UiSavePage(); return; }
+            if (lowerCh == L'a') { UiBookmark(); return; }
+            if (lowerCh == L'c') { // copy selected link/image URL, else page URL
+                std::wstring toCopy = g_currentUrl;
+                if (state.selectedItem >= 0) {
+                    if (static_cast<size_t>(state.selectedItem) <
+                        g_currentLinks.size())
+                        toCopy = g_currentLinks[
+                            static_cast<size_t>(state.selectedItem)].url;
+                    else {
+                        const int img = ImageIndexForItem(state,
+                            state.selectedItem);
+                        if (img >= 0)
+                            toCopy = g_currentImages[
+                                static_cast<size_t>(img)].url;
+                    }
+                }
+                if (!toCopy.empty() && UiCopyToClipboard(toCopy))
+                    g_consoleStatus = L"Ссылка скопирована в буфер обмена.";
+                else
+                    g_consoleStatus = L"Нечего копировать.";
+                return;
+            }
+            if (lowerCh == L'z') { // copy the whole page text
+                if (!g_currentText.empty() &&
+                    UiCopyToClipboard(ToWide(g_currentText)))
+                    g_consoleStatus = L"Текст страницы скопирован.";
+                else
+                    g_consoleStatus = L"На странице нет текста.";
+                return;
+            }
+            if (ch == L'?') { // quick help
+                state.input = L"help";
+                state.caret = state.input.size();
+                state.inputViewStart = 0;
+                state.focus = Focus::Search;
+                Submit(state);
                 return;
             }
             // Digits: quick-select a numbered link; Enter opens it.
@@ -2120,6 +2308,15 @@ namespace console_ui {
     void HandleMouse(State& state, const MOUSE_EVENT_RECORD& mouse) {
         if (mouse.dwEventFlags == MOUSE_WHEELED) {
             const SHORT delta = static_cast<SHORT>(HIWORD(mouse.dwButtonState));
+            // Wheel scrolls the settings dropdown while it is open.
+            if (state.settingsOpen) {
+                const int maxRows = std::max(4, state.height - 7);
+                const int maxScroll = std::max(0,
+                    static_cast<int>(SettingsMenuItems().size()) - maxRows);
+                state.settingsScroll = std::clamp(state.settingsScroll +
+                    (delta > 0 ? -1 : 1), 0, maxScroll);
+                return;
+            }
             const size_t notches = static_cast<size_t>(std::max(1, std::abs(static_cast<int>(delta)) / WHEEL_DELTA));
             const size_t step = notches * 3;
             const size_t maxOffset = state.pageLineCount > static_cast<size_t>(state.pageCapacity)
@@ -2146,13 +2343,37 @@ namespace console_ui {
         const int x = mouse.dwMousePosition.X - state.left;
         const int y = mouse.dwMousePosition.Y - state.top;
 
-        // Middle-click on a tab closes it (like browsers).
-        if (mouse.dwEventFlags == 0 && y == 0 &&
+        // Middle-click: on a tab closes it; on a link/image opens it in a
+        // new tab (like browsers).
+        if (mouse.dwEventFlags == 0 &&
             (mouse.dwButtonState & FROM_LEFT_2ND_BUTTON_PRESSED) != 0) {
-            for (const auto& hit : state.tabHits) {
-                if (!hit.isNew && !hit.isClose &&
-                    x >= hit.left && x <= hit.right) {
-                    ApplyView(state, UiCloseTabIndex(hit.index, CurrentView(state)));
+            if (y == 0) {
+                for (const auto& hit : state.tabHits) {
+                    if (!hit.isNew && !hit.isClose &&
+                        x >= hit.left && x <= hit.right) {
+                        ApplyView(state, UiCloseTabIndex(hit.index,
+                                                        CurrentView(state)));
+                        return;
+                    }
+                }
+                return;
+            }
+            for (const auto& row : state.itemRows) {
+                if (y == row.row) {
+                    std::wstring target;
+                    if (static_cast<size_t>(row.item) < g_currentLinks.size())
+                        target = g_currentLinks[
+                            static_cast<size_t>(row.item)].url;
+                    else {
+                        const int img = ImageIndexForItem(state, row.item);
+                        if (img >= 0)
+                            target = g_currentImages[
+                                static_cast<size_t>(img)].url;
+                    }
+                    if (!target.empty() &&
+                        target.rfind(L"openfile://", 0) != 0)
+                        ApplyView(state, UiOpenInNewTab(target,
+                                                        CurrentView(state)));
                     return;
                 }
             }
@@ -2406,11 +2627,13 @@ namespace console_ui {
                             const int previousAction = state.hoveredAction;
                             const int previousButton = state.hoveredSearchButton;
                             const int previousSuggest = state.hoverSuggest;
+                            const int previousMenu = state.settingsHover;
                             HandleMouse(state, mouse);
                             redraw = redraw || previousHover != state.hoveredItem ||
                                      previousAction != state.hoveredAction ||
                                      previousButton != state.hoveredSearchButton ||
-                                     previousSuggest != state.hoverSuggest;
+                                     previousSuggest != state.hoverSuggest ||
+                                     previousMenu != state.settingsHover;
                         } else if (mouse.dwButtonState == 0 &&
                                    mouse.dwEventFlags != DOUBLE_CLICK) {
                             // button release — no redraw needed

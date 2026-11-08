@@ -1247,7 +1247,15 @@ void LoadWorker(LoadJob job) {
 
     if (job.kind == LoadJob::Kind::Internal) {
         // Synchronous in-memory page (downloads list etc.) — no network.
-        if (job.url.find(L"downloads") != std::wstring::npos) {
+        if (job.url.rfind(L"wiki://", 0) == 0) {
+            result.outcome = WikiFetchPage(job.url);
+            result.ok = result.outcome.ok;
+            result.statusText = result.ok
+                ? L"Готово."
+                : (result.outcome.error.empty()
+                       ? L"Не удалось открыть страницу."
+                       : result.outcome.error);
+        } else if (job.url.find(L"downloads") != std::wstring::npos) {
             result.outcome = BuildDownloadsPage();
             result.ok = true;
             result.statusText =
@@ -1449,28 +1457,145 @@ void CommitInternalPage(const std::wstring& kind) {
 
 } // namespace
 
+// Commit a fully-built in-memory page (view-source / page info). Like the
+// history/bookmarks pages it does not create a nav entry — Back still
+// returns to the previous page via the existing stack.
+static void CommitCustomPage(const std::wstring& url,
+                             const std::string& title,
+                             const std::string& text,
+                             std::vector<Link> links) {
+    g_currentUrl = url;
+    g_currentTitle = title;
+    g_currentText = NormalizeDisplayText(text);
+    g_currentHtml.clear();
+    g_currentLinks = std::move(links);
+    g_currentImages.clear();
+    g_currentFields.clear();
+    g_currentForms.clear();
+    g_consolePageOpen = true;
+    g_consoleStatus.clear();
+}
+
+void UiViewSourcePage() {
+    if (g_currentHtml.empty() || IsInternalPageUrl(g_currentUrl) ||
+        IsWikiPageUrl(g_currentUrl)) {
+        g_consoleStatus = L"Исходный код недоступен для этой страницы.";
+        return;
+    }
+    const std::string source = g_currentHtml;
+    CommitCustomPage(L"view-source://" + g_currentUrl,
+                     "View-source: " + g_currentTitle, source, {});
+    g_currentHtml = source; // keep it so F5 can rebuild this page
+    g_consoleStatus = L"Исходный код страницы.";
+}
+
+void UiPageInfoPage() {
+    if (!g_consolePageOpen || g_currentUrl.empty()) {
+        g_consoleStatus = L"Сначала откройте страницу.";
+        return;
+    }
+    std::string text;
+    auto line = [&](const std::string& s) { text += s; text += '\n'; };
+    line("■ Информация о странице\n");
+    line("▎ URL: " + ToUtf8(g_currentUrl));
+    line("▎ Заголовок: " + (g_currentTitle.empty()
+                            ? std::string("(без названия)") : g_currentTitle));
+    line("▎ Текст: " + std::to_string(g_currentText.size()) + " символов");
+    line("▎ Ссылок: " + std::to_string(g_currentLinks.size()) +
+         " · Картинок: " + std::to_string(g_currentImages.size()) +
+         " · Полей: " + std::to_string(g_currentFields.size()) +
+         " · Форм: " + std::to_string(g_currentForms.size()));
+    line("▎ Сеть: " + std::to_string(g_networkRequests.load()) +
+         " запросов · из кэша " + std::to_string(g_cacheHits.load()));
+    line("▎ Скачано за сеанс: " + std::to_string(g_downloadedBytes.load()) +
+         " байт");
+    CommitCustomPage(L"info://page", "Информация о странице", text, {});
+}
+
+static std::wstring FmtBytes(uint64_t bytes) {
+    if (bytes >= 1024 * 1024)
+        return std::to_wstring(bytes / (1024 * 1024)) + L" МБ";
+    if (bytes >= 1024)
+        return std::to_wstring(bytes / 1024) + L" КБ";
+    return std::to_wstring(bytes) + L" Б";
+}
+
+void UiShowStats() {
+    uint64_t cacheBytes = 0;
+    size_t cacheFiles = 0;
+    std::error_code ec;
+    if (fs::exists(CacheDirPath(), ec)) {
+        for (const auto& entry : fs::recursive_directory_iterator(
+                 CacheDirPath(), fs::directory_options::skip_permission_denied,
+                 ec)) {
+            if (entry.is_regular_file(ec)) {
+                cacheBytes += entry.file_size(ec);
+                ++cacheFiles;
+            }
+        }
+    }
+    size_t dlFiles = 0;
+    if (fs::exists(DownloadsDirPath(), ec)) {
+        for (const auto& entry : fs::recursive_directory_iterator(
+                 DownloadsDirPath(),
+                 fs::directory_options::skip_permission_denied, ec)) {
+            if (entry.is_regular_file(ec)) ++dlFiles;
+        }
+    }
+    g_consoleStatus =
+        L"Запросов: " + std::to_wstring(g_networkRequests.load()) +
+        L" · из кэша: " + std::to_wstring(g_cacheHits.load()) +
+        L" · кэш: " + std::to_wstring(cacheFiles) + L" файлов, " +
+        FmtBytes(cacheBytes) +
+        L" · загрузок: " + std::to_wstring(dlFiles) +
+        L" · вкладок: " + std::to_wstring(UiTabCount()) +
+        L" · скачано: " + FmtBytes(g_downloadedBytes.load());
+}
+
+void UiShowTabs() {
+    EnsureTabs();
+    const size_t count = UiTabCount();
+    const size_t active = UiActiveTabIndex();
+    std::wstring s = L"Вкладки (" + std::to_wstring(count) + L"): ";
+    for (size_t i = 0; i < count && i < 12; ++i) {
+        if (i) s += L" | ";
+        std::wstring title = UiTabTitle(i);
+        if (title.size() > 24) title = title.substr(0, 21) + L"...";
+        s += std::to_wstring(i + 1) + L":" + title;
+        if (i == active) s += L"*";
+    }
+    if (count > 12) s += L" | …";
+    g_consoleStatus = s;
+}
+
+
 // ---------------------------------------------------------------------------
 // Async navigation API used by the console UI
 // ---------------------------------------------------------------------------
 
 void UiOpenUrl(const std::wstring& rawUrl, CacheMode mode) {
-    // Local Wikipedia library pages render inside the console UI.
-    if (LowerWide(rawUrl).rfind(L"wiki://", 0) == 0) {
-        WikiOpenConsole(rawUrl);
-        return;
-    }
-    const std::wstring url = NormalizeUrl(rawUrl);
-    if (url.empty()) {
-        g_consoleStatus = L"Некорректный адрес сайта.";
-        return;
-    }
     EnsureTabs();
     LoadJob job;
-    job.kind = LoadJob::Kind::Url;
-    job.url = url;
-    job.mode = mode;
-    job.addToNavigation = true;
-    job.recordVisit = true;
+    if (IsWikiPageUrl(rawUrl)) {
+        // Local Wikipedia pages render through the same pipeline as
+        // internal pages: real tab nav, back/forward, session restore.
+        job.kind = LoadJob::Kind::Internal;
+        job.url = rawUrl;
+        job.mode = CacheMode::Bypass;
+        job.addToNavigation = true;
+        job.recordVisit = true;
+    } else {
+        const std::wstring url = NormalizeUrl(rawUrl);
+        if (url.empty()) {
+            g_consoleStatus = L"Некорректный адрес сайта.";
+            return;
+        }
+        job.kind = LoadJob::Kind::Url;
+        job.url = url;
+        job.mode = mode;
+        job.addToNavigation = true;
+        job.recordVisit = true;
+    }
     job.tabIndex = g_activeTab;
     QueueOrStart(job);
 }
@@ -1514,10 +1639,13 @@ void UiBack() {
     }
     const int target = static_cast<int>(tab.navIndex) - 1;
     EnsureTabs();
+    const std::wstring targetUrl = tab.nav[static_cast<size_t>(target)];
+    const bool internal = IsInternalPageUrl(targetUrl) ||
+                          IsWikiPageUrl(targetUrl);
     LoadJob job;
-    job.kind = LoadJob::Kind::Url;
-    job.url = tab.nav[static_cast<size_t>(target)];
-    job.mode = CacheMode::Use;
+    job.kind = internal ? LoadJob::Kind::Internal : LoadJob::Kind::Url;
+    job.url = targetUrl;
+    job.mode = internal ? CacheMode::Bypass : CacheMode::Use;
     job.addToNavigation = false;
     job.recordVisit = false;
     job.navIndexTarget = target;
@@ -1533,10 +1661,13 @@ void UiForward() {
     }
     const int target = static_cast<int>(tab.navIndex) + 1;
     EnsureTabs();
+    const std::wstring targetUrl = tab.nav[static_cast<size_t>(target)];
+    const bool internal = IsInternalPageUrl(targetUrl) ||
+                          IsWikiPageUrl(targetUrl);
     LoadJob job;
-    job.kind = LoadJob::Kind::Url;
-    job.url = tab.nav[static_cast<size_t>(target)];
-    job.mode = CacheMode::Use;
+    job.kind = internal ? LoadJob::Kind::Internal : LoadJob::Kind::Url;
+    job.url = targetUrl;
+    job.mode = internal ? CacheMode::Bypass : CacheMode::Use;
     job.addToNavigation = false;
     job.recordVisit = false;
     job.navIndexTarget = target;
@@ -1547,6 +1678,29 @@ void UiForward() {
 void UiReload() {
     if (g_currentUrl.empty()) {
         g_consoleStatus = L"Нет страницы для обновления.";
+        return;
+    }
+    if (IsWikiPageUrl(g_currentUrl)) {
+        EnsureTabs();
+        LoadJob job;
+        job.kind = LoadJob::Kind::Internal;
+        job.url = g_currentUrl;
+        job.mode = CacheMode::Bypass;
+        job.addToNavigation = false;
+        job.recordVisit = false;
+        job.tabIndex = g_activeTab;
+        QueueOrStart(job);
+        return;
+    }
+    if (g_currentUrl.rfind(L"view-source://", 0) == 0) {
+        // Re-commit the stored source (globals still hold it).
+        CommitCustomPage(g_currentUrl, g_currentTitle, g_currentHtml, {});
+        g_consoleStatus = L"Исходный код страницы.";
+        return;
+    }
+    if (g_currentUrl.rfind(L"info://", 0) == 0) {
+        g_consoleStatus = L"Информация о странице не обновляется — "
+                          L"откройте её заново (клавиша i).";
         return;
     }
     if (IsInternalPageUrl(g_currentUrl)) {
@@ -1679,8 +1833,8 @@ static void MaybeStartPendingLoad() {
         return;
     tab.pendingLoad = false;
     LoadJob job;
-    job.kind = IsInternalPageUrl(tab.url) ? LoadJob::Kind::Internal
-                                        : LoadJob::Kind::Url;
+    job.kind = (IsInternalPageUrl(tab.url) || IsWikiPageUrl(tab.url))
+        ? LoadJob::Kind::Internal : LoadJob::Kind::Url;
     job.url = tab.url;
     job.mode = CacheMode::Use;
     job.addToNavigation = true;
@@ -1714,7 +1868,8 @@ TabViewState UiNewTab(const TabViewState& view) {
 
 TabViewState UiOpenInNewTab(const std::wstring& rawUrl,
                             const TabViewState& view) {
-    const std::wstring url = NormalizeUrl(rawUrl);
+    const bool wiki = IsWikiPageUrl(rawUrl);
+    const std::wstring url = wiki ? rawUrl : NormalizeUrl(rawUrl);
     if (url.empty()) {
         g_consoleStatus = L"Некорректный адрес сайта.";
         return view;
@@ -1731,9 +1886,9 @@ TabViewState UiOpenInNewTab(const std::wstring& rawUrl,
     LoadTabToGlobals(g_tabs[g_activeTab]);
 
     LoadJob job;
-    job.kind = LoadJob::Kind::Url;
+    job.kind = wiki ? LoadJob::Kind::Internal : LoadJob::Kind::Url;
     job.url = url;
-    job.mode = CacheMode::Use;
+    job.mode = wiki ? CacheMode::Bypass : CacheMode::Use;
     job.addToNavigation = true;
     job.recordVisit = true;
     job.tabIndex = g_activeTab;

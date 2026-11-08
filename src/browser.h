@@ -441,9 +441,16 @@ void UiCancelDownloadByName(const std::wstring& name);
 void UiWiki(const std::wstring& args);
 void ShutdownWiki();
 fs::path WikiHtmlRoot();
-// Renders a wiki://<lang>/<file> | wiki://portal | wiki://search/<q> page
-// in the console UI (no external window).
-void WikiOpenConsole(const std::wstring& url);
+bool IsWikiPageUrl(const std::wstring& url);
+// Builds a wiki://<lang>/<file> | wiki://portal | wiki://random |
+// wiki://search/<q> | wiki://grep/<q> page through the load pipeline.
+FetchOutcome WikiFetchPage(const std::wstring& url);
+
+// console_ui helpers — in-memory pages for source/info + status commands.
+void UiViewSourcePage();
+void UiPageInfoPage();
+void UiShowStats();
+void UiShowTabs();
 
 // Address-bar suggestions from history + bookmarks (cached by file mtime).
 std::vector<std::wstring> GetUrlSuggestions(const std::wstring& prefix,

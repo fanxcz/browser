@@ -14,6 +14,7 @@
 #include <locale>
 #include <memory>
 #include <mutex>
+#include <random>
 #include <sstream>
 #include <thread>
 
@@ -718,80 +719,88 @@ std::wstring WikiStatusLine() {
 }
 
 // ---------------------------------------------------------------------------
-// Console rendering — wiki:// pages live entirely in the terminal UI.
+// Page builder — wiki:// content flows through the normal load pipeline
+// (LoadJob::Kind::Internal -> WikiFetchPage), so tabs, back/forward and
+// history work exactly like for web pages.
 // ---------------------------------------------------------------------------
-
-void CommitWikiPage(const std::wstring& url, const std::wstring& title,
-                    const std::wstring& body, std::vector<Link> links) {
-    g_currentUrl = url;
-    g_currentTitle = ToUtf8(title);
-    g_currentText = NormalizeDisplayText(ToUtf8(body));
-    g_currentHtml.clear();
-    g_currentLinks = std::move(links);
-    g_currentImages.clear();
-    g_currentFields.clear();
-    g_currentForms.clear();
-    g_consolePageOpen = true;
-    g_consoleStatus.clear();
-}
 
 std::wstring ArticleConsoleUrl(const WikiEntry& e) {
     return L"wiki://" + ToWide(e.lang) + L"/" + SafeFileName(e.title);
 }
 
-void WikiRenderPortal() {
-    const auto entriesPtr = LoadIndex();
-    const auto& entries = *entriesPtr;
+bool IsWikiPageUrl(const std::wstring& url) {
+    return url.rfind(L"wiki://", 0) == 0;
+}
+
+namespace {
+
+struct WikiPage {
+    std::wstring title;
+    std::wstring body;
+    std::vector<Link> links;
+};
+
+// Returns an entry with an empty lang when the library is empty.
+WikiEntry PickRandomEntry() {
+    const auto entries = LoadIndex();
+    WikiEntry none;
+    if (entries->empty()) return none;
+    static std::mt19937 rng{std::random_device{}()};
+    return (*entries)[rng() % entries->size()];
+}
+
+WikiPage PortalPage() {
+    const auto entries = LoadIndex();
     size_t ru = 0, en = 0;
-    for (const auto& e : entries) {
+    for (const auto& e : *entries) {
         if (e.lang == "ru") ++ru; else if (e.lang == "en") ++en;
     }
-    std::wstring body;
-    body += L"■ Wikipedia — офлайн библиотека\n";
-    body += L"▎ Только текст · RU + EN · локальные копии\n";
-    body += L"▎ Статей: " + std::to_wstring(entries.size()) +
-            L"  (RU " + std::to_wstring(ru) + L" · EN " +
-            std::to_wstring(en) + L")\n\x01\n";
-    body += L"▎ wiki search <текст> — поиск по заголовкам\n";
-    body += L"▎ wiki <запрос> — открыть статью сразу\n";
-    body += L"▎ wiki grep <текст> — поиск по текстам статей\n";
-    body += L"▎ wiki download <ru|en> [часть|all|N] — закачать ещё\n";
-    body += L"▎ wiki stop — остановить закачку\n";
-    body += L"▎ wiki status — статус загрузки\n";
-
-    std::vector<Link> links;
-    links.push_back({ToUtf8(L"Русская Википедия — указатель"),
-                     L"wiki://ru"});
-    links.push_back({ToUtf8(L"English Wikipedia — index"),
-                     L"wiki://en"});
-    CommitWikiPage(L"wiki://portal", L"Wikipedia — офлайн", body,
-                   std::move(links));
+    WikiPage p;
+    p.title = L"Wikipedia — офлайн библиотека";
+    p.body += L"■ Wikipedia — офлайн библиотека\n";
+    p.body += L"▎ Только текст · RU + EN · локальные копии\n";
+    p.body += L"▎ Статей: " + std::to_wstring(entries->size()) +
+              L"  (RU " + std::to_wstring(ru) + L" · EN " +
+              std::to_wstring(en) + L")\n\x01\n";
+    p.body += L"▎ wiki search <текст> — поиск по заголовкам\n";
+    p.body += L"▎ wiki <запрос> — открыть статью сразу\n";
+    p.body += L"▎ wiki grep <текст> — поиск по текстам статей\n";
+    p.body += L"▎ wiki random — случайная статья\n";
+    p.body += L"▎ wiki download <ru|en> [часть|all|N] — закачать ещё\n";
+    p.body += L"▎ wiki stop — остановить закачку\n";
+    p.body += L"▎ wiki status — статус загрузки\n";
+    p.links.push_back({ToUtf8(L"Русская Википедия — указатель"),
+                       L"wiki://ru"});
+    p.links.push_back({ToUtf8(L"English Wikipedia — index"),
+                       L"wiki://en"});
+    p.links.push_back({ToUtf8(L"Случайная статья"), L"wiki://random"});
+    return p;
 }
 
-void WikiRenderIndex(const std::string& lang) {
-    const auto entriesPtr = LoadIndex();
-    const auto& entries = *entriesPtr;
+WikiPage IndexPage(const std::string& lang) {
+    const auto entries = LoadIndex();
     std::vector<const WikiEntry*> mine;
-    for (const auto& e : entries)
+    for (const auto& e : *entries)
         if (e.lang == lang) mine.push_back(&e);
 
-    std::wstring body;
-    body += L"■ Wikipedia " + ToWide(lang) + L" — указатель\n";
-    body += L"▎ " + std::to_wstring(mine.size()) + L" статей\n";
+    WikiPage p;
+    p.title = L"Wikipedia " + ToWide(lang);
+    p.body += L"■ Wikipedia " + ToWide(lang) + L" — указатель\n";
+    p.body += L"▎ " + std::to_wstring(mine.size()) + L" статей\n";
     const size_t cap = std::min<size_t>(mine.size(), 400);
     if (mine.size() > cap)
-        body += L"▎ Показаны первые " + std::to_wstring(cap) +
-                L" — для поиска используйте wiki search <текст>\n";
+        p.body += L"▎ Показаны первые " + std::to_wstring(cap) +
+                  L" — для поиска используйте wiki search <текст>\n";
 
-    std::vector<Link> links;
-    links.push_back({ToUtf8(L"← Портал Wikipedia"), L"wiki://portal"});
+    p.links.push_back({ToUtf8(L"← Портал Wikipedia"), L"wiki://portal"});
+    p.links.push_back({ToUtf8(L"Случайная статья"), L"wiki://random"});
     for (size_t i = 0; i < cap; ++i)
-        links.push_back({ToUtf8(mine[i]->title), ArticleConsoleUrl(*mine[i])});
-    CommitWikiPage(L"wiki://" + ToWide(lang),
-                   L"Wikipedia " + ToWide(lang), body, std::move(links));
+        p.links.push_back({ToUtf8(mine[i]->title),
+                           ArticleConsoleUrl(*mine[i])});
+    return p;
 }
 
-void WikiRenderArticle(WikiEntry e) {
+WikiPage ArticlePage(WikiEntry e) {
     auto in = OpenUtf8In(WikiLangDir(e.lang) / e.txtName);
     std::wstring line;
     std::wstring title;
@@ -799,108 +808,162 @@ void WikiRenderArticle(WikiEntry e) {
     if (title.empty()) title = e.title;
     e.title = title;
 
-    std::wstring body;
-    body += L"■ " + title + L"\n";
-    body += L"▎ Wikipedia · " + ToWide(e.lang) +
-            L" · офлайн копия\n\x01\n";
+    WikiPage p;
+    p.title = title;
+    p.body += L"■ " + title + L"\n";
+    p.body += L"▎ Wikipedia · " + ToWide(e.lang) +
+              L" · офлайн копия\n\x01\n";
     bool first = true;
     while (std::getline(in, line)) {
         const std::wstring t = TrimWide(line);
         if (t.empty()) {
-            if (!first) body += L"\x01\n";
+            if (!first) p.body += L"\x01\n";
             continue;
         }
         first = false;
         // MediaWiki list markers → console bullets (colored bright).
         if (t.rfind(L"* ", 0) == 0 || t.rfind(L"*\t", 0) == 0)
-            body += L"• " + TrimWide(t.substr(1)) + L"\n";
-        else if (t.rfind(L"#", 0) == 0)
-            body += t + L"\n";
+            p.body += L"• " + TrimWide(t.substr(1)) + L"\n";
         else
-            body += t + L"\n";
+            p.body += t + L"\n";
     }
 
-    std::vector<Link> links;
-    links.push_back({ToUtf8(L"← Портал Wikipedia"), L"wiki://portal"});
-    links.push_back({ToUtf8(L"Указатель " + ToWide(e.lang)),
-                     L"wiki://" + ToWide(e.lang)});
-    links.push_back({ToUtf8(L"Искать «" + title + L"»"),
-                     L"wiki://search/" +
-                     ToWide(UrlEncode(ToUtf8(title)))});
-    CommitWikiPage(ArticleConsoleUrl(e), title, body, std::move(links));
-    g_consoleStatus = L"Статья: " + title;
+    p.links.push_back({ToUtf8(L"← Портал Wikipedia"), L"wiki://portal"});
+    p.links.push_back({ToUtf8(L"Указатель " + ToWide(e.lang)),
+                       L"wiki://" + ToWide(e.lang)});
+    p.links.push_back({ToUtf8(L"Случайная статья"), L"wiki://random"});
+    p.links.push_back({ToUtf8(L"Искать «" + title + L"»"),
+                       L"wiki://search/" +
+                       ToWide(UrlEncode(ToUtf8(title)))});
+    return p;
 }
 
-void WikiRenderResults(const std::wstring& query,
-                       const std::vector<WikiEntry>& results,
-                       const std::wstring& note = L"") {
-    std::wstring body;
-    body += L"■ Поиск: " + query + L"\n";
-    body += L"▎ Найдено: " + std::to_wstring(results.size()) + L"\n";
-    if (!note.empty()) body += L"▎ " + note + L"\n";
-    body += L"\x01\n";
-    body += L"▎ wiki <запрос> — открыть статью сразу\n";
-    body += L"▎ wiki grep <текст> — поиск по текстам статей\n";
+WikiPage ResultsPage(const std::wstring& query,
+                     const std::vector<WikiEntry>& results,
+                     const std::wstring& note = L"") {
+    WikiPage p;
+    p.title = L"Wikipedia — поиск: " + query;
+    p.body += L"■ Поиск: " + query + L"\n";
+    p.body += L"▎ Найдено: " + std::to_wstring(results.size()) + L"\n";
+    if (!note.empty()) p.body += L"▎ " + note + L"\n";
+    p.body += L"\x01\n";
+    p.body += L"▎ wiki <запрос> — открыть статью сразу\n";
+    p.body += L"▎ wiki grep <текст> — поиск по текстам статей\n";
+    p.body += L"▎ wiki random — случайная статья\n";
 
-    std::vector<Link> links;
-    links.push_back({ToUtf8(L"← Портал Wikipedia"), L"wiki://portal"});
+    p.links.push_back({ToUtf8(L"← Портал Wikipedia"), L"wiki://portal"});
     for (const auto& e : results)
-        links.push_back({ToUtf8(e.title + L"  ·  " + ToWide(e.lang)),
-                         ArticleConsoleUrl(e)});
-    CommitWikiPage(L"wiki://results", L"Wikipedia — поиск: " + query,
-                   body, std::move(links));
+        p.links.push_back({ToUtf8(e.title + L"  ·  " + ToWide(e.lang)),
+                           ArticleConsoleUrl(e)});
+    return p;
 }
 
-// wiki://portal | wiki://ru | wiki://en | wiki://ru/<file> |
-// wiki://search/<urlencoded>
-void WikiOpenConsole(const std::wstring& url) {
+} // namespace
+
+// wiki://portal | wiki://ru | wiki://en | wiki://random |
+// wiki://<lang>/<file> | wiki://search/<urlencoded> | wiki://grep/<urlencoded>
+FetchOutcome WikiFetchPage(const std::wstring& url) {
+    FetchOutcome out;
+    out.finalUrl = url;
     std::wstring rest = url.size() > 7 ? url.substr(7) : L"";
     rest = LowerWide(TrimWide(rest));
+
+    WikiPage page;
+    bool have = false;
+
     if (rest.empty() || rest == L"portal" || rest == L"index") {
-        WikiRenderPortal();
-        return;
-    }
-    if (rest.rfind(L"search/", 0) == 0 || rest == L"search") {
+        page = PortalPage();
+        have = true;
+    } else if (rest == L"random") {
+        const WikiEntry e = PickRandomEntry();
+        if (e.lang.empty()) {
+            out.ok = false;
+            out.error = L"Библиотека пуста — сначала wiki download ru|en.";
+            return out;
+        }
+        out.finalUrl = ArticleConsoleUrl(e);
+        page = ArticlePage(e);
+        have = true;
+    } else if (rest.rfind(L"search/", 0) == 0 || rest == L"search") {
         const std::wstring q = rest.size() > 7
-            ? ToWide(PercentDecode(
-                  ToUtf8(TrimWide(rest.substr(7)))))
+            ? ToWide(PercentDecode(ToUtf8(TrimWide(rest.substr(7)))))
             : L"";
-        WikiRenderResults(q, SearchTitles(q, 200));
-        return;
-    }
-    const size_t slash = rest.find(L'/');
-    const std::wstring lang = slash == std::wstring::npos
-        ? rest : rest.substr(0, slash);
-    if (lang != L"ru" && lang != L"en") {
-        WikiRenderPortal();
-        return;
-    }
-    if (slash == std::wstring::npos ||
-        rest.substr(slash + 1) == L"index" ||
-        rest.substr(slash + 1).empty()) {
-        WikiRenderIndex(lang == L"en" ? "en" : "ru");
-        return;
-    }
-    // Article: wiki://<lang>/<SafeFileName(title)>
-    const std::wstring fileBase = rest.substr(slash + 1);
-    const std::string langUtf8 = lang == L"en" ? "en" : "ru";
-    // Fast path: txtName is always SafeFileName(title)+".txt" — open the
-    // file directly instead of scanning the whole index.
-    std::error_code ec;
-    const fs::path txtPath =
-        WikiLangDir(langUtf8) / (fileBase + L".txt");
-    if (fs::exists(txtPath, ec)) {
-        WikiEntry e{langUtf8, L"", fileBase + L".txt"};
-        WikiRenderArticle(e);
-        return;
-    }
-    for (const auto& e : *LoadIndex()) {
-        if (e.lang == langUtf8 && SafeFileName(e.title) == fileBase) {
-            WikiRenderArticle(e);
-            return;
+        page = ResultsPage(q, SearchTitles(q, 200));
+        have = true;
+    } else if (rest.rfind(L"grep/", 0) == 0) {
+        const std::wstring q = LowerWide(ToWide(PercentDecode(
+            ToUtf8(TrimWide(rest.substr(5))))));
+        std::vector<WikiEntry> hits;
+        if (!q.empty()) {
+            for (const auto& e : *LoadIndex()) {
+                if (hits.size() >= 50) break;
+                auto in = OpenUtf8In(WikiLangDir(e.lang) / e.txtName);
+                std::wstring line;
+                bool found = false;
+                while (std::getline(in, line)) {
+                    if (LowerWide(line).find(q) != std::wstring::npos) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (found) hits.push_back(e);
+            }
+        }
+        page = ResultsPage(q, hits,
+            hits.empty() ? L"В текстах ничего не найдено." : L"");
+        have = true;
+    } else {
+        const size_t slash = rest.find(L'/');
+        const std::wstring lang = slash == std::wstring::npos
+            ? rest : rest.substr(0, slash);
+        if (lang != L"ru" && lang != L"en") {
+            page = PortalPage();
+            have = true;
+        } else if (slash == std::wstring::npos ||
+                   rest.substr(slash + 1) == L"index" ||
+                   rest.substr(slash + 1).empty()) {
+            page = IndexPage(lang == L"en" ? "en" : "ru");
+            have = true;
+        } else {
+            // Article: wiki://<lang>/<SafeFileName(title)>
+            const std::wstring fileBase = rest.substr(slash + 1);
+            const std::string langUtf8 = lang == L"en" ? "en" : "ru";
+            // Fast path: txtName is always SafeFileName(title)+".txt".
+            std::error_code ec;
+            const fs::path txtPath =
+                WikiLangDir(langUtf8) / (fileBase + L".txt");
+            WikiEntry e;
+            bool found = false;
+            if (fs::exists(txtPath, ec)) {
+                e = WikiEntry{langUtf8, L"", fileBase + L".txt"};
+                found = true;
+            } else {
+                for (const auto& cand : *LoadIndex()) {
+                    if (cand.lang == langUtf8 &&
+                        SafeFileName(cand.title) == fileBase) {
+                        e = cand;
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            if (found) {
+                page = ArticlePage(e);
+                have = true;
+            }
         }
     }
-    g_consoleStatus = L"Статья не найдена в локальной библиотеке.";
+
+    if (!have) {
+        out.ok = false;
+        out.error = L"Статья не найдена в локальной библиотеке.";
+        return out;
+    }
+    out.ok = true;
+    out.title = ToUtf8(page.title);
+    out.text = NormalizeDisplayText(ToUtf8(page.body));
+    out.links = std::move(page.links);
+    return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -912,8 +975,8 @@ void UiWiki(const std::wstring& args) {
 
     if (a.empty() || a == L"status" || a == L"help") {
         g_consoleStatus = WikiStatusLine() +
-            L" | wiki download <ru|en> [часть|all|N] · wiki search <текст> · "
-            L"wiki stop · wiki portal";
+            L" | wiki download <ru|en> [часть|200mb|all|N] · "
+            L"wiki search <текст> · wiki random · wiki stop · wiki portal";
         return;
     }
     if (a == L"stop") {
@@ -921,8 +984,8 @@ void UiWiki(const std::wstring& args) {
         g_consoleStatus = L"Wikipedia: останавливаю…";
         return;
     }
-    if (a == L"portal" || a == L"index") {
-        WikiRenderPortal();
+    if (a == L"random" || a == L"portal" || a == L"index") {
+        UiOpenUrl(a == L"random" ? L"wiki://random" : L"wiki://portal");
         return;
     }
     if (a.rfind(L"download ", 0) == 0 || a == L"download") {
@@ -944,7 +1007,7 @@ void UiWiki(const std::wstring& args) {
         lang = LowerWide(lang);
         mode = LowerWide(mode);
         if (lang != L"ru" && lang != L"en") {
-            g_consoleStatus = L"Формат: wiki download <ru|en> [часть|200mb|all|N]";
+            g_consoleStatus = L"Формат: wiki download <ru|en> [часть|all|N]";
             return;
         }
         long long maxTotal = 0;
@@ -970,7 +1033,16 @@ void UiWiki(const std::wstring& args) {
     if (a.rfind(L"search ", 0) == 0 || a.rfind(L"find ", 0) == 0) {
         const size_t sp = a.find_first_of(L" \t");
         const std::wstring q = TrimWide(args).substr(sp + 1);
-        WikiRenderResults(q, SearchTitles(q, 200));
+        UiOpenUrl(L"wiki://search/" + ToWide(UrlEncode(ToUtf8(q))));
+        return;
+    }
+    if (a.rfind(L"grep ", 0) == 0) {
+        const std::wstring q = TrimWide(a.substr(5));
+        if (q.empty()) {
+            g_consoleStatus = L"Формат: wiki grep <текст>";
+            return;
+        }
+        UiOpenUrl(L"wiki://grep/" + ToWide(UrlEncode(ToUtf8(q))));
         return;
     }
     if (a.rfind(L"open ", 0) == 0) {
@@ -980,32 +1052,7 @@ void UiWiki(const std::wstring& args) {
             g_consoleStatus = L"Статья не найдена: " + q;
             return;
         }
-        WikiRenderArticle(results.front());
-        return;
-    }
-    if (a.rfind(L"grep ", 0) == 0) {
-        const std::wstring q = LowerWide(TrimWide(a.substr(5)));
-        if (q.empty()) {
-            g_consoleStatus = L"Формат: wiki grep <текст>";
-            return;
-        }
-        g_consoleStatus = L"Wikipedia: ищу в текстах статей…";
-        std::vector<WikiEntry> hits;
-        for (const auto& e : *LoadIndex()) {
-            if (hits.size() >= 50) break;
-            auto in = OpenUtf8In(WikiLangDir(e.lang) / e.txtName);
-            std::wstring line;
-            bool found = false;
-            while (std::getline(in, line)) {
-                if (LowerWide(line).find(q) != std::wstring::npos) {
-                    found = true;
-                    break;
-                }
-            }
-            if (found) hits.push_back(e);
-        }
-        WikiRenderResults(q, hits,
-            hits.empty() ? L"В текстах ничего не найдено." : L"");
+        UiOpenUrl(ArticleConsoleUrl(results.front()));
         return;
     }
 
@@ -1017,11 +1064,11 @@ void UiWiki(const std::wstring& args) {
     }
     if (results.size() == 1 ||
         LowerWide(results.front().title) == a) {
-        WikiRenderArticle(results.front());
+        UiOpenUrl(ArticleConsoleUrl(results.front()));
         g_consoleStatus = L"Открыто: " + results.front().title;
         return;
     }
-    WikiRenderResults(a, results);
+    UiOpenUrl(L"wiki://search/" + ToWide(UrlEncode(ToUtf8(a))));
 }
 
 void ShutdownWiki() {
