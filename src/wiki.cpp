@@ -354,7 +354,15 @@ fs::path ArticleHtmlPath(const WikiEntry& e) {
 void EnsureArticleHtml(const WikiEntry& e) {
     const fs::path out = ArticleHtmlPath(e);
     std::error_code ec;
-    if (fs::exists(out, ec)) return;
+    if (fs::exists(out, ec)) {
+        // Regenerate pages rendered with an older stylesheet.
+        std::ifstream chk(out, std::ios::binary);
+        std::string head(4096, '\0');
+        chk.read(head.data(), static_cast<std::streamsize>(head.size()));
+        head.resize(static_cast<size_t>(chk.gcount()));
+        if (head.find("Consolas") != std::string::npos) return;
+        fs::remove(out, ec);
+    }
 
     auto in = OpenUtf8In(WikiLangDir(e.lang) / e.txtName);
     std::wstring title = e.title, text;
