@@ -431,6 +431,9 @@ std::wstring UiSavePage();
 std::wstring UiSavePageMarkdown();
 void UiShowDownloadsPage();
 void UiOpenInternalPage(const std::wstring& kind);
+void UiOpenTerminal();
+bool UiTerminalRun(const std::wstring& cmdLine);
+std::string TermPageText(); // terminal transcript as page body
 void UiOpenDownloadedFile(const std::wstring& name);
 void UiVerifyDownloadedFile(const std::wstring& name);
 void UiOpenExternalBrowser();

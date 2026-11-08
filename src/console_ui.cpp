@@ -306,6 +306,9 @@ namespace console_ui {
         long selAnchor = -1;
         long selCursor = -1;
         std::vector<std::wstring> selLines;
+        // Omnibox text selection (Ctrl+A, Shift+arrows later); anchor is the
+        // fixed end, caret is the moving end.
+        long inputSelAnchor = -1;
         // <meta http-equiv="refresh"> auto-reload timer.
         int refreshSeconds = 0;
         int refreshInterval = 0;   // >0: repeating interval (reload N)
@@ -606,7 +609,31 @@ namespace console_ui {
             shown = state.input.substr(state.inputViewStart,
                 static_cast<size_t>(fieldWidth));
         }
-        At(state, x + 3, row, shown, inputColor, fieldWidth);
+        // Draw the input text; if a selection exists, highlight its range.
+        if (state.inputSelAnchor >= 0 && !shown.empty()) {
+            const long selLo = std::min(state.inputSelAnchor,
+                                        static_cast<long>(state.caret));
+            const long selHi = std::max(state.inputSelAnchor,
+                                        static_cast<long>(state.caret));
+            const size_t base = state.inputViewStart;
+            size_t i = 0;
+            while (i < shown.size()) {
+                const long pos = static_cast<long>(base + i);
+                const bool sel = pos >= selLo && pos < selHi;
+                size_t j = i + 1;
+                while (j < shown.size()) {
+                    const long p2 = static_cast<long>(base + j);
+                    if ((p2 >= selLo && p2 < selHi) != sel) break;
+                    ++j;
+                }
+                At(state, x + 3 + static_cast<int>(i), row,
+                   shown.substr(i, j - i), sel ? kSelected : inputColor,
+                   static_cast<int>(j - i));
+                i = j;
+            }
+        } else {
+            At(state, x + 3, row, shown, inputColor, fieldWidth);
+        }
         At(state, x + boxWidth - 1, row, L"│", kMuted);
         At(state, x, row + 1, L"╰" + std::wstring(boxWidth - 2, L'─') + L"╯", kMuted);
         if (boxWidth >= 30)
@@ -829,6 +856,29 @@ namespace console_ui {
                state.selAnchor != state.selCursor;
     }
 
+    void ClearInputSel(State& state) { state.inputSelAnchor = -1; }
+
+    bool HasInputSel(const State& state) {
+        return state.inputSelAnchor >= 0 &&
+               state.inputSelAnchor <= static_cast<long>(state.input.size()) &&
+               static_cast<size_t>(state.inputSelAnchor) != state.caret;
+    }
+
+    std::pair<size_t, size_t> InputSelRange(const State& state) {
+        const size_t a = static_cast<size_t>(state.inputSelAnchor);
+        const size_t b = state.caret;
+        return {std::min(a, b), std::max(a, b)};
+    }
+
+    void DeleteInputSel(State& state) {
+        if (!HasInputSel(state)) return;
+        const auto [lo, hi] = InputSelRange(state);
+        state.input.erase(lo, hi - lo);
+        state.caret = lo;
+        ClearInputSel(state);
+        state.browsingHistory = false;
+    }
+
     // Join the selected page lines into plain text for the clipboard.
     std::wstring SelectedText(const State& state) {
         if (!HasSelection(state)) return {};
@@ -911,7 +961,7 @@ namespace console_ui {
                     L"reopen", L"clear-history", L"export", L"import",
                     L"bookmarks-clear", L"cache-clear", L"edge", L"web",
                     L"sync", L"stop", L"pause", L"exit",
-                    L"help", L"open", L"search", L"download" };
+                    L"help", L"open", L"search", L"download", L"terminal" };
                 const std::wstring low = LowerWide(in);
                 std::vector<std::wstring> cmds;
                 for (const wchar_t* c : kCmds) {
@@ -1708,6 +1758,18 @@ namespace console_ui {
         state.inputViewStart = 0;
         state.browsingHistory = false;
 
+        // On the terminal page the omnibox is a shell prompt: every line is
+        // executed by the persistent cmd.exe session.
+        if (g_currentUrl == std::wstring(kInternalPrefix) + L"terminal") {
+            const std::wstring low = LowerWide(value);
+            if (low == L"exit" || low == L"quit") {
+                ActivateAction(state, NavAction::Back);
+                return;
+            }
+            UiTerminalRun(value);
+            return;
+        }
+
         // Field editing: Enter commits the value into the form field.
         if (state.editingField >= 0) {
             if (static_cast<size_t>(state.editingField) < g_currentFields.size()) {
@@ -1884,10 +1946,15 @@ namespace console_ui {
         if (lower == L"bookmarks-clear") { UiClearBookmarks(); return; }
         if (lower == L"cache-clear") { UiClearCache(); return; }
         if (lower == L"help") {
-            g_consoleStatus = L"Запрос или адрес + Enter. Команды: back, forward, reload, home, history, bookmarks, downloads, download <url> [имя], edge <url>, web [url|back|find <т>], ai [@] <вопрос>, ai sum, stop, bookmark add, stats, tabs, dup, reopen, copy, source, info, reader, md, backup, session, clear-history, clear-history-older <дн>, export, import <файл>, bookmarks-clear, cache-clear, exit. Клавиши на странице: j/k, Enter, o, /, b/f, g/G, u — исходник, i — инфо, h — история, n/w — вкладки, ,/. — навигация, s — сохранить (Shift+S — markdown), a — закладка, e — внешний браузер, v — вставить, c — копировать ссылку, z/Ctrl+Shift+C — текст страницы, V — выделение мышью/клавиатами + y — копировать, F3 — следующее совпадение, ? — справка.";
+            g_consoleStatus = L"Запрос или адрес + Enter. Команды: back, forward, reload, home, history, bookmarks, downloads, download <url> [имя], edge <url>, web [url|back|find <т>], ai [@] <вопрос>, ai sum, stop, bookmark add, stats, tabs, dup, reopen, copy, source, info, reader, md, backup, session, clear-history, clear-history-older <дн>, export, import <файл>, bookmarks-clear, cache-clear, terminal — консоль Windows, exit. Клавиши на странице: j/k, Enter, o, /, b/f, g/G, u — исходник, i — инфо, h — история, n/w — вкладки, ,/. — навигация, s — сохранить (Shift+S — markdown), a — закладка, e — внешний браузер, v — вставить, c — копировать ссылку, z/Ctrl+Shift+C — текст страницы, V — выделение мышью/клавиатами + y — копировать, F3 — следующее совпадение, ? — справка.";
             return;
         }
         if (lower == L"stats") { UiShowStats(); return; }
+        if (lower == L"terminal" || lower == L"term" || lower == L"cmd") {
+            UiOpenTerminal();
+            state.focus = Focus::Page;
+            return;
+        }
         if (lower == L"ai" || lower.rfind(L"ai ", 0) == 0 ||
             lower.rfind(L"ai@", 0) == 0) {
             UiAi(lower == L"ai" ? L"" : TrimWide(value.substr(3)));
@@ -2100,6 +2167,20 @@ namespace console_ui {
             return;
         }
         if (ctrl && code == 'C') {
+            // In the omnibox: copy the selection or the whole input.
+            if (state.focus == Focus::Search && !state.input.empty()) {
+                if (HasInputSel(state)) {
+                    const auto range = InputSelRange(state);
+                    UiCopyToClipboard(state.input.substr(
+                        range.first, range.second - range.first));
+                    g_consoleStatus = L"Текст из адресной строки скопирован.";
+                } else if (UiCopyToClipboard(state.input)) {
+                    g_consoleStatus = L"Адрес/запрос скопирован.";
+                } else {
+                    g_consoleStatus = L"Нечего копировать.";
+                }
+                return;
+            }
             // Text selection first; otherwise link/image URL, else page URL.
             CopySelectionOrUrl(state);
             return;
@@ -2117,6 +2198,7 @@ namespace console_ui {
             // Paste clipboard text into the omnibox at the caret.
             const std::wstring clip = UiGetClipboardText();
             if (!clip.empty()) {
+                DeleteInputSel(state); // paste replaces the selection
                 state.input.insert(state.caret, clip);
                 state.caret += clip.size();
                 state.browsingHistory = false;
@@ -2154,6 +2236,7 @@ namespace console_ui {
             return;
         }
         if (ctrl && code == VK_BACK && state.focus == Focus::Search) {
+            if (HasInputSel(state)) { DeleteInputSel(state); return; }
             // Delete the word before the caret.
             size_t p = state.caret;
             while (p > 0 && (state.input[p - 1] == L' ' ||
@@ -2204,6 +2287,63 @@ namespace console_ui {
         }
         if (ctrl && code == 'D') { UiBookmark(); return; }
         if (ctrl && code == 'S') { UiSavePage(); return; }
+        // --- Remaining browser-standard Ctrl combos ---
+        if (ctrl && code == 'A' && state.focus == Focus::Search) {
+            // Select the whole omnibox input.
+            state.inputSelAnchor = 0;
+            state.caret = state.input.size();
+            return;
+        }
+        if (ctrl && code == 'G') { FindNextOnPage(state); return; } // find next
+        if (ctrl && code == 'K') { // focus the address/search bar
+            state.focus = Focus::Search;
+            state.findMode = false;
+            state.browsingHistory = false;
+            return;
+        }
+        if (ctrl && code == 'I') { // Ctrl+I ~ Tab: jump to the omnibox
+            state.focus = Focus::Search;
+            state.findMode = false;
+            state.browsingHistory = false;
+            return;
+        }
+        if (ctrl && code == 'O') { UiOpenDownloadsFolder(); return; }
+        if (ctrl && code == 'P') { UiSavePage(); return; } // print -> save
+        if (ctrl && code == 'Q') { running = false; return; } // quit
+        if (ctrl && code == 'X' && state.focus == Focus::Search) {
+            // Cut: selection first, else the char before the caret.
+            if (HasInputSel(state)) {
+                const auto range = InputSelRange(state);
+                const std::wstring cut =
+                    state.input.substr(range.first, range.second - range.first);
+                if (UiCopyToClipboard(cut)) {
+                    state.input.erase(range.first, range.second - range.first);
+                    state.caret = range.first;
+                    ClearInputSel(state);
+                    state.browsingHistory = false;
+                }
+            } else if (state.caret > 0) {
+                state.input.erase(state.caret - 1, 1);
+                --state.caret;
+                state.browsingHistory = false;
+            }
+            return;
+        }
+        if (ctrl && code == 'Y') { // Firefox-style: Ctrl+Y = history
+            UiShowHistoryPage();
+            state.focus = Focus::Page;
+            state.selectedItem = -1; state.hoveredItem = -1;
+            state.scrollOffset = 0;
+            return;
+        }
+        if (ctrl && code == 'Z') { // undo last closed tab
+            ApplyView(state, UiReopenClosedTab(CurrentView(state)));
+            return;
+        }
+        if (ctrl && code == 'U' && state.focus == Focus::Page) {
+            UiViewSourcePage(); // Firefox-style: Ctrl+U = view source
+            return;
+        }
         if (code == VK_BACK && state.focus == Focus::Page && !state.findMode) {
             ActivateAction(state, NavAction::Back);
             return;
@@ -2694,11 +2834,17 @@ namespace console_ui {
         }
         if (state.focus != Focus::Search) return;
 
+        // Arrow/Home/End collapse an active input selection to the caret.
+        if (state.inputSelAnchor >= 0 &&
+            (code == VK_LEFT || code == VK_RIGHT || code == VK_HOME ||
+             code == VK_END))
+            ClearInputSel(state);
         if (code == VK_LEFT) { if (state.caret > 0) --state.caret; state.browsingHistory = false; return; }
         if (code == VK_RIGHT) { if (state.caret < state.input.size()) ++state.caret; state.browsingHistory = false; return; }
         if (code == VK_HOME) { state.caret = 0; return; }
         if (code == VK_END) { state.caret = state.input.size(); return; }
         if (code == VK_BACK) {
+            if (HasInputSel(state)) { DeleteInputSel(state); return; }
             if (state.caret > 0) {
                 size_t eraseAt = state.caret - 1;
                 if (eraseAt > 0 && state.input[eraseAt] >= 0xDC00 && state.input[eraseAt] <= 0xDFFF &&
@@ -2711,12 +2857,14 @@ namespace console_ui {
             return;
         }
         if (code == VK_DELETE) {
+            if (HasInputSel(state)) { DeleteInputSel(state); return; }
             if (state.caret < state.input.size()) state.input.erase(state.caret, 1);
             state.browsingHistory = false;
             return;
         }
         const wchar_t ch = key.uChar.UnicodeChar;
         if (!ctrl && !alt && ch >= L' ' && ch != 0) {
+            DeleteInputSel(state); // typing replaces the selection
             state.input.insert(state.caret, 1, ch);
             ++state.caret;
             state.browsingHistory = false;
