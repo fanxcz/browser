@@ -3304,9 +3304,14 @@ namespace console_ui {
             !GetConsoleMode(state.inputHandle, &oldMode) ||
             !GetConsoleScreenBufferInfo(state.output, &state.info))
             return false;
+        // ENABLE_PROCESSED_INPUT stays OFF: with it on, Ctrl+C is eaten
+        // as a control event and never reaches the key loop as a key
+        // press, so copy could never fire. Now Ctrl+C arrives as a
+        // normal KEY_EVENT (and ConsoleCtrlHandler is just a safety net).
         const DWORD newMode = (oldMode | ENABLE_EXTENDED_FLAGS | ENABLE_MOUSE_INPUT |
                                ENABLE_WINDOW_INPUT) &
-                              ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_QUICK_EDIT_MODE);
+                              ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT |
+                                ENABLE_QUICK_EDIT_MODE | ENABLE_PROCESSED_INPUT);
         if (!SetConsoleMode(state.inputHandle, newMode)) return false;
         SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
 
