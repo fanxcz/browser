@@ -3287,6 +3287,13 @@ namespace console_ui {
         }
     }
 
+    // Ctrl+C must reach our input loop as a key event (copy), not kill
+    // the process via the default console control handler. Ctrl+Break
+    // still terminates — it stays the emergency exit.
+    BOOL WINAPI ConsoleCtrlHandler(DWORD type) {
+        return type == CTRL_C_EVENT ? TRUE : FALSE;
+    }
+
     bool Run() {
         State state;
         if (state.output == INVALID_HANDLE_VALUE || state.inputHandle == INVALID_HANDLE_VALUE)
@@ -3301,6 +3308,7 @@ namespace console_ui {
                                ENABLE_WINDOW_INPUT) &
                               ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_QUICK_EDIT_MODE);
         if (!SetConsoleMode(state.inputHandle, newMode)) return false;
+        SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
 
         g_consoleUiMode = true;
         LoadThemePacks();
@@ -3433,6 +3441,7 @@ namespace console_ui {
             if (running && redraw) Render(state);
         }
         g_consoleUiMode = false;
+        SetConsoleCtrlHandler(NULL, TRUE);
         SetConsoleMode(state.inputHandle, oldMode);
         SetConsoleTextAttribute(state.output, kText);
         CONSOLE_CURSOR_INFO cursorInfo{20, TRUE};
