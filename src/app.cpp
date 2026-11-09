@@ -1361,14 +1361,6 @@ void LoadWorker(LoadJob job) {
             result.outcome.text = HelpPageText();
             result.ok = true;
             result.statusText = L"Справка по командам и клавишам.";
-        } else if (job.url == std::wstring(kInternalPrefix) + L"terminal") {
-            result.outcome.ok = true;
-            result.outcome.finalUrl = job.url;
-            result.outcome.title = "Терминал — cmd.exe";
-            result.outcome.text = TermPageText();
-            result.ok = true;
-            result.statusText =
-                L"Терминал: пишите команды Windows в адресную строку.";
         } else {
             result.ok = false;
             result.statusText = L"Неизвестная внутренняя страница.";
@@ -2165,228 +2157,6 @@ void UiShowBookmarksPage() {
 
 
 
-// Opens an internal page (downloads/history/bookmarks) through the normal
-// navigation pipeline, so it lives in a real tab with back/forward.
-// --- Embedded terminal: browser://terminal -------------------------------
-// A persistent cmd.exe child process connected through pipes. Commands are
-// typed into the omnibox on the terminal page; output is appended to a
-// transcript that is rendered as ordinary (selectable) page text.
-namespace {
-
-struct ShellProc {
-    HANDLE inWrite = nullptr;    // parent -> cmd.exe stdin
-    HANDLE outRead = nullptr;    // cmd.exe stdout+stderr -> parent
-    PROCESS_INFORMATION pi{};
-    std::string pending;         // raw OEM bytes not yet consumed
-    std::mutex mtx;
-    std::thread reader;
-    bool alive = false;
-};
-ShellProc g_shell;
-std::vector<std::string> g_termLines;  // UTF-8 transcript
-std::mutex g_termMtx;
-constexpr size_t kTermMaxLines = 4000;
-constexpr DWORD kTermTimeoutMs = 90000;
-
-void ShellReadLoop() {
-    char buf[4096];
-    DWORD got = 0;
-    while (ReadFile(g_shell.outRead, buf, sizeof(buf), &got, nullptr) && got) {
-        std::lock_guard<std::mutex> lock(g_shell.mtx);
-        g_shell.pending.append(buf, got);
-        if (g_shell.pending.size() > 512 * 1024)
-            g_shell.pending.erase(0, g_shell.pending.size() / 2);
-    }
-}
-
-// cmd.exe speaks the OEM codepage (866 on Russian Windows) — convert to
-// UTF-8 so the transcript renders correctly.
-std::string OemToUtf8(const std::string& s) {
-    if (s.empty()) return s;
-    const int wlen = MultiByteToWideChar(CP_OEMCP, 0, s.data(),
-                                       static_cast<int>(s.size()),
-                                       nullptr, 0);
-    if (wlen <= 0) return s;
-    std::wstring w(static_cast<size_t>(wlen), L'\0');
-    MultiByteToWideChar(CP_OEMCP, 0, s.data(), static_cast<int>(s.size()),
-                        w.data(), wlen);
-    const int ulen = WideCharToMultiByte(CP_UTF8, 0, w.data(), wlen,
-                                       nullptr, 0, nullptr, nullptr);
-    if (ulen <= 0) return {};
-    std::string out(static_cast<size_t>(ulen), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, w.data(), wlen, out.data(), ulen,
-                        nullptr, nullptr);
-    return out;
-}
-
-bool EnsureShell() {
-    if (g_shell.alive) {
-        DWORD code = 0;
-        if (GetExitCodeProcess(g_shell.pi.hProcess, &code) &&
-            code == STILL_ACTIVE)
-            return true;
-        g_shell.alive = false;
-    }
-    SECURITY_ATTRIBUTES sa{};
-    sa.nLength = sizeof(sa);
-    sa.bInheritHandle = TRUE;
-    HANDLE outR = nullptr, outW = nullptr, inR = nullptr, inW = nullptr;
-    if (!CreatePipe(&outR, &outW, &sa, 0) ||
-        !CreatePipe(&inR, &inW, &sa, 0))
-        return false;
-    // Parent ends must not be inherited by the child.
-    SetHandleInformation(inW, HANDLE_FLAG_INHERIT, 0);
-    SetHandleInformation(outR, HANDLE_FLAG_INHERIT, 0);
-
-    STARTUPINFOA si{};
-    si.cb = sizeof(si);
-    si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
-    si.wShowWindow = SW_HIDE;
-    si.hStdInput = inR;
-    si.hStdOutput = outW;
-    si.hStdError = outW;
-    PROCESS_INFORMATION pi{};
-    std::string cmdline = "cmd.exe /Q /D";
-    std::vector<char> cl(cmdline.begin(), cmdline.end());
-    cl.push_back('\0');
-    const BOOL ok = CreateProcessA(nullptr, cl.data(), nullptr, nullptr,
-                                   TRUE, CREATE_NO_WINDOW, nullptr, nullptr,
-                                   &si, &pi);
-    CloseHandle(inR);
-    CloseHandle(outW);
-    if (!ok) {
-        CloseHandle(inW);
-        CloseHandle(outR);
-        return false;
-    }
-    if (g_shell.reader.joinable()) g_shell.reader.join();
-    g_shell.inWrite = inW;
-    g_shell.outRead = outR;
-    g_shell.pi = pi;
-    g_shell.alive = true;
-    {
-        std::lock_guard<std::mutex> lock(g_shell.mtx);
-        g_shell.pending.clear();
-    }
-    g_shell.reader = std::thread(ShellReadLoop);
-    return true;
-}
-
-// Runs one command line in the persistent shell; returns decoded output.
-std::string ShellExec(const std::wstring& cmdLine) {
-    const std::string cmd = ToUtf8(cmdLine);
-    size_t start = 0;
-    {
-        std::lock_guard<std::mutex> lock(g_shell.mtx);
-        if (g_shell.pending.size() > 8192)
-            g_shell.pending.erase(0, g_shell.pending.size() - 8192);
-        start = g_shell.pending.size();
-    }
-    const std::string marker = "__BC_DONE_";
-    const std::string toWrite =
-        cmd + "\r\necho " + marker + "%errorlevel%__\r\n";
-    DWORD written = 0;
-    if (!WriteFile(g_shell.inWrite, toWrite.data(),
-                   static_cast<DWORD>(toWrite.size()), &written, nullptr))
-        return "(cmd.exe не отвечает)";
-
-    const auto deadline = std::chrono::steady_clock::now() +
-                          std::chrono::milliseconds(kTermTimeoutMs);
-    std::string raw;
-    int exitCode = -1;
-    for (;;) {
-        size_t consumeEnd = std::string::npos;
-        {
-            std::lock_guard<std::mutex> lock(g_shell.mtx);
-            const size_t pos = g_shell.pending.find(marker, start);
-            if (pos != std::string::npos) {
-                // Marker line looks like "__BC_DONE_<code>__".
-                size_t codeEnd = g_shell.pending.find("__", pos + marker.size());
-                if (codeEnd != std::string::npos && codeEnd > pos + marker.size()) {
-                    const std::string codeStr = g_shell.pending.substr(
-                        pos + marker.size(), codeEnd - pos - marker.size());
-                    try { exitCode = std::stoi(codeStr); } catch (...) {}
-                }
-                raw = g_shell.pending.substr(start, pos - start);
-                consumeEnd = g_shell.pending.find('\n', codeEnd);
-                consumeEnd = consumeEnd == std::string::npos
-                    ? g_shell.pending.size() : consumeEnd + 1;
-            }
-        }
-        if (consumeEnd != std::string::npos) {
-            std::lock_guard<std::mutex> lock(g_shell.mtx);
-            if (consumeEnd <= g_shell.pending.size())
-                g_shell.pending.erase(0, consumeEnd);
-            break;
-        }
-        if (std::chrono::steady_clock::now() > deadline) {
-            std::lock_guard<std::mutex> lock(g_shell.mtx);
-            raw = g_shell.pending.substr(start);
-            g_shell.pending.erase(0, g_shell.pending.size());
-            return OemToUtf8(raw) + "\n(таймаут — команда ещё выполняется)";
-        }
-        Sleep(25);
-    }
-    // Trim trailing CR/LF.
-    while (!raw.empty() && (raw.back() == '\n' || raw.back() == '\r'))
-        raw.pop_back();
-    std::string out = OemToUtf8(raw);
-    if (exitCode > 0)
-        out += "\n[код выхода " + std::to_string(exitCode) + "]";
-    return out;
-}
-
-void TermAppend(const std::string& line) {
-    std::lock_guard<std::mutex> lock(g_termMtx);
-    // Split embedded newlines into separate transcript lines.
-    size_t pos = 0;
-    while (pos <= line.size()) {
-        const size_t nl = line.find('\n', pos);
-        std::string l = line.substr(pos, nl == std::string::npos
-                                            ? std::string::npos : nl - pos);
-        if (!l.empty() && l.back() == '\r') l.pop_back();
-        g_termLines.push_back(std::move(l));
-        if (nl == std::string::npos) break;
-        pos = nl + 1;
-    }
-    while (g_termLines.size() > kTermMaxLines)
-        g_termLines.erase(g_termLines.begin());
-}
-
-} // namespace
-
-// Terminal transcript rendered as the browser://terminal page body.
-std::string TermPageText() {
-    std::string all;
-    {
-        std::lock_guard<std::mutex> lock(g_termMtx);
-        for (const auto& l : g_termLines) { all += l; all += '\n'; }
-    }
-    if (all.empty())
-        all =
-            "Встроенный терминал Windows (cmd.exe).\n"
-            "Пишите команды в адресную строку сверху и нажимайте Enter:\n"
-            "  dir · ipconfig · systeminfo · ping ya.ru · tree · ver\n"
-            "cd, set, path и остальные команды работают — сессия cmd\n"
-            "сохраняется между командами.\n"
-            "exit — вернуться назад. Ctrl+` — полноценный cmd.exe.\n";
-    return all;
-}
-
-// Rebuild the on-screen page from the transcript (called after each command
-// while the terminal page is open).
-void TermRenderPage() {
-    if (LowerWide(g_currentUrl) != std::wstring(kInternalPrefix) + L"terminal")
-        return;
-    g_currentText = TermPageText();
-    g_currentTitle = "Терминал — cmd.exe";
-    g_currentLinks.clear();
-    g_currentImages.clear();
-    g_currentFields.clear();
-    g_currentForms.clear();
-    g_currentHtml.clear();
-}
-
 // browser://help page body — commands and keys of the console UI.
 std::string HelpPageText() {
     return
@@ -2422,9 +2192,7 @@ std::string HelpPageText() {
         "  s — сохранить HTML, Shift+S — Markdown.\n"
         "  Ctrl+D — закладка, Ctrl+S — сохранить, Ctrl+Y — история.\n"
         "\n"
-        "■ ТЕРМИНАЛ И СИСТЕМА\n"
-        "  terminal — встроенный cmd.exe (browser://terminal).\n"
-        "  Ctrl+` — полноценный интерактивный cmd.exe.\n"
+        "■ СИСТЕМА\n"
         "  stats — статистика сети и кэша.\n"
         "  backup / session — бэкап и экспорт сессии.\n"
         "  clear-history, clear-history-older <дн>, cache-clear.\n"
@@ -2436,11 +2204,7 @@ std::string HelpPageText() {
         "  define <слово> / dict — словарь (dictionaryapi.dev).\n"
         "  tr <текст> / translate — перевод (Google gtx).\n"
         "  w <запрос> / wiki — поиск по Википедии.\n"
-        "  timer <число><s|m|h> — таймер в статус-баре.\n"
-        "  pass [длина] — пароль в буфер, uuid — UUID.\n"
-        "  calc <выражение> — калькулятор.\n"
         "  title / links / mdlink — заголовок/ссылки/MD-ссылка.\n"
-        "  words / readtime — слова и время чтения страницы.\n"
         "  scroll <1-20> — строк за щелчок колеса.\n"
         "  home <url> — своя главная страница.\n"
         "  feedback / repo / site — GitHub-ссылки проекта.\n"
@@ -2669,8 +2433,6 @@ std::string TrPageText(const std::string& textEnc) {
     return ToUtf8(out);
 }
 
-void UiOpenTerminal() { UiOpenInternalPage(L"terminal"); }
-
 // --- Update check: once a day ask GitHub for the latest release tag ---
 namespace {
 std::mutex g_updateMutex;
@@ -2749,25 +2511,6 @@ std::wstring UiTakeUpdateNotice() {
     std::wstring out = std::move(g_updateNotice);
     g_updateNotice.clear();
     return out;
-}
-
-// Runs `cmdLine` in the persistent shell. Returns false when the terminal
-// page isn't open (caller should treat input as a normal query then).
-bool UiTerminalRun(const std::wstring& cmdLine) {
-    if (LowerWide(g_currentUrl) != std::wstring(kInternalPrefix) + L"terminal")
-        return false;
-    const std::wstring c = TrimWide(cmdLine);
-    if (c.empty()) return true;
-    if (!EnsureShell()) {
-        TermAppend("(не удалось запустить cmd.exe)");
-        TermRenderPage();
-        return true;
-    }
-    TermAppend("> " + ToUtf8(c));
-    const std::string out = ShellExec(c);
-    if (!out.empty()) TermAppend(out);
-    TermRenderPage();
-    return true;
 }
 
 void UiOpenInternalPage(const std::wstring& kind) {
@@ -3064,11 +2807,11 @@ void SaveTabs() {
         if (!tab.pageOpen || tab.url.empty())
             continue;
         // Internal pages restorable through the load worker:
-        // downloads, terminal, help (history/bookmarks build
-        // synchronously and stay session-only).
+        // downloads, help, stats, about, notes, cache, ip, define/, tr/
+        // (history/bookmarks build synchronously and stay session-only).
         if (IsInternalPageUrl(tab.url)) {
             static const wchar_t* kOk[] = {
-                L"downloads", L"terminal", L"help", L"stats",
+                L"downloads", L"help", L"stats",
                 L"about", L"notes", L"cache", L"ip", L"define/", L"tr/" };
             bool restorable = false;
             for (const wchar_t* k : kOk)

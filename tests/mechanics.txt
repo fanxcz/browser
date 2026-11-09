@@ -101,26 +101,18 @@ expect Загрузк
 key alt+left
 wait 1500
 
-# --- terminal page ---
+# --- cache internal page ---
 key ctrl+l
 wait 300
-text terminal
-wait 300
-key enter
-wait 3000
-dump build/Release/term1.txt
-expect cmd.exe
-key ctrl+l
-wait 300
-text ver
+text cache
 wait 200
 key enter
-wait 4000
-dump build/Release/term2.txt
-expect Microsoft
-# leave via back (NOT "exit" — that quits the whole app)
+wait 2500
+dump build/Release/cache_page.txt
+expect Кэш
+# leave via back (internal pages don't record visits)
 key alt+left
-wait 2000
+wait 1500
 
 # --- help command ---
 key ctrl+l
@@ -144,33 +136,6 @@ dump build/Release/after_menu.txt
 expect Переключить тему
 key esc
 wait 300
-
-# --- new utilities: uuid copies to clipboard ---
-key ctrl+l
-wait 300
-text uuid
-wait 200
-key enter
-wait 600
-expectclip -
-
-# --- calc shows result in status bar ---
-key ctrl+l
-wait 300
-text calc 6*7
-wait 200
-key enter
-wait 600
-expect = 42
-
-# --- timer arms countdown ---
-key ctrl+l
-wait 300
-text timer 30s
-wait 200
-key enter
-wait 800
-expect Таймер
 
 # --- notes page ---
 key ctrl+l

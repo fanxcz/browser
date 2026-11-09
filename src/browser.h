@@ -435,9 +435,6 @@ std::wstring UiSavePage();
 std::wstring UiSavePageMarkdown();
 void UiShowDownloadsPage();
 void UiOpenInternalPage(const std::wstring& kind);
-void UiOpenTerminal();
-bool UiTerminalRun(const std::wstring& cmdLine);
-std::string TermPageText(); // terminal transcript as page body
 std::string HelpPageText(); // browser://help page body
 std::string StatsPageText(); // browser://stats page body
 std::wstring UiGetSetting(const std::wstring& key);

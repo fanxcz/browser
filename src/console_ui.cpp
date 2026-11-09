@@ -8,7 +8,6 @@
 #include <cwchar>
 #include <fstream>
 #include <functional>
-#include <random>
 #include <vector>
 
 namespace console_ui {
@@ -331,9 +330,6 @@ namespace console_ui {
         bool pendingClickCtrl = false;
         Clock::time_point pendingClickTime{};
         bool clickCtrl = false;      // Ctrl held at press → open in new tab
-        // Countdown timer (`timer 5m`) shown in the status bar.
-        Clock::time_point timerEnd{};
-        std::wstring timerLabel;
         // Download speed sampling for the status bar.
         uint64_t dlPrevBytes = 0;
         Clock::time_point dlPrevTime{};
@@ -1096,51 +1092,6 @@ namespace console_ui {
         g_consoleStatus = L"Строка выделена — c / Ctrl+C копирует.";
     }
 
-    // Tiny arithmetic evaluator for `calc`: + - * / % ^, parentheses,
-    // unary minus. Returns NaN on parse error.
-    struct CalcParser {
-        const std::string& s; size_t p = 0;
-        explicit CalcParser(const std::string& str) : s(str) {}
-        void ws() { while (p < s.size() && isspace((unsigned char)s[p])) ++p; }
-        bool eat(char c) { ws(); if (p < s.size() && s[p] == c) { ++p; return true; } return false; }
-        double expr() {
-            double v = term();
-            for (;;) {
-                if (eat('+')) v += term();
-                else if (eat('-')) v -= term();
-                else return v;
-            }
-        }
-        double term() {
-            double v = factor();
-            for (;;) {
-                if (eat('*')) v *= factor();
-                else if (eat('/')) { const double d = factor(); v = d == 0 ? NAN : v / d; }
-                else if (eat('%')) { const double d = factor(); v = d == 0 ? NAN : std::fmod(v, d); }
-                else return v;
-            }
-        }
-        double factor() {
-            ws();
-            if (eat('+')) return factor();
-            if (eat('-')) return -factor();
-            if (eat('(')) { const double v = expr(); if (!eat(')')) return NAN; return v; }
-            ws();
-            const size_t st = p;
-            while (p < s.size() && (isdigit((unsigned char)s[p]) || s[p] == '.')) ++p;
-            if (p == st) return NAN;
-            double v = std::strtod(s.c_str() + st, nullptr);
-            if (eat('^')) v = std::pow(v, factor());
-            return v;
-        }
-    };
-    double EvalCalc(const std::string& expr) {
-        if (expr.empty()) return NAN;
-        CalcParser cp(expr);
-        const double v = cp.expr();
-        cp.ws();
-        return cp.p == expr.size() ? v : NAN;
-    }
 
     // Fire a deferred click: Ctrl+click opens the link/image under the
     // cursor in a new tab, otherwise normal click dispatch.
@@ -1379,13 +1330,12 @@ namespace console_ui {
                     L"reopen", L"clear-history", L"export", L"import",
                     L"bookmarks-clear", L"cache-clear", L"edge", L"web",
                     L"sync", L"stop", L"pause", L"exit",
-                    L"help", L"open", L"search", L"download", L"terminal",
+                    L"help", L"open", L"search", L"download",
                     L"about", L"notes", L"note", L"cache", L"ip",
-                    L"define", L"dict", L"tr", L"translate", L"timer",
-                    L"pass", L"uuid", L"guid", L"calc", L"feedback",
+                    L"define", L"dict", L"tr", L"translate",
+                    L"feedback",
                     L"repo", L"site", L"w", L"wiki", L"scroll",
-                    L"title", L"links", L"mdlink", L"words",
-                    L"readtime", L"ver", L"version" };
+                    L"title", L"links", L"mdlink" };
                 const std::wstring low = LowerWide(in);
                 std::vector<std::wstring> cmds;
                 for (const wchar_t* c : kCmds) {
@@ -1435,7 +1385,7 @@ namespace console_ui {
             Center(state, center + 4,
                    L"Ctrl+H — история   Ctrl+F — найти   j/k — ссылки   Enter — открыть   o — адрес", kMuted);
             Center(state, center + 5,
-                   L"terminal — консоль Windows   ai — ИИ без ключа   V — выделение текста", kAccent);
+                   L"ai — ИИ без ключа   V — выделение текста", kAccent);
             DrawHomeBookmarks(state, center + 7);
             Center(state, height - 2,
                    L"Tab — поле/ссылки   Ctrl+L — адрес   F6 — поле   b/f — назад/вперёд   Esc — выход", kMuted);
@@ -1823,19 +1773,7 @@ namespace console_ui {
             } else {
                 state.dlPrevTime = Clock::time_point{};
             }
-            // Countdown timer prefix + wall clock on the footer row.
-            if (!state.timerLabel.empty() &&
-                Clock::now() < state.timerEnd) {
-                const auto rem = std::chrono::duration_cast<
-                    std::chrono::seconds>(state.timerEnd - Clock::now())
-                    .count();
-                const long rr = static_cast<long>(rem);
-                wchar_t tb[32];
-                std::swprintf(tb, 32, L"%02ld:%02ld",
-                              rr / 60, rr % 60);
-                status = L"⏱ " + state.timerLabel + L" " + tb +
-                    L"   " + status;
-            }
+            // Wall clock on the footer row.
             {
                 const std::time_t now = std::time(nullptr);
                 std::tm tmv{};
@@ -2311,21 +2249,6 @@ namespace console_ui {
         state.browsingHistory = false;
         state.inputUndo.clear();
 
-        // On the terminal page the omnibox is a shell prompt: every line is
-        // executed by the persistent cmd.exe session.
-        if (g_currentUrl == std::wstring(kInternalPrefix) + L"terminal") {
-            const std::wstring low = LowerWide(value);
-            if (low == L"exit" || low == L"quit") {
-                ActivateAction(state, NavAction::Back);
-                return;
-            }
-            // Terminal commands join the omnibox history so Up/Down
-            // recalls them like a real shell prompt.
-            RememberInput(state, value);
-            UiTerminalRun(value);
-            return;
-        }
-
         // On the notes page the omnibox appends a line to data/notes.txt.
         if (g_currentUrl == std::wstring(kInternalPrefix) + L"notes") {
             const std::wstring t = TrimWide(value);
@@ -2532,11 +2455,6 @@ namespace console_ui {
             state.focus = Focus::Page;
             return;
         }
-        if (lower == L"terminal" || lower == L"term" || lower == L"cmd") {
-            UiOpenTerminal();
-            state.focus = Focus::Page;
-            return;
-        }
         if (lower == L"ai" || lower.rfind(L"ai ", 0) == 0 ||
             lower.rfind(L"ai@", 0) == 0) {
             UiAi(lower == L"ai" ? L"" : TrimWide(value.substr(3)));
@@ -2626,73 +2544,6 @@ namespace console_ui {
             g_consoleStatus = L"Открыто в браузере.";
             return;
         }
-        if (lower.rfind(L"pass ", 0) == 0 || lower == L"pass") {
-            int len = 16;
-            if (lower.size() > 5) {
-                try { len = std::stoi(ToUtf8(TrimWide(value.substr(5)))); }
-                catch (...) {}
-            }
-            len = std::clamp(len, 4, 64);
-            static const char kSet[] =
-                "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ"
-                "23456789!@#$%&*+-=?";
-            std::random_device rd;
-            std::mt19937_64 rng(rd());
-            std::string pw;
-            for (int i = 0; i < len; ++i)
-                pw += kSet[rng() % (sizeof(kSet) - 1)];
-            UiCopyToClipboard(ToWide(pw));
-            g_consoleStatus = L"Пароль скопирован в буфер: " + ToWide(pw);
-            return;
-        }
-        if (lower == L"uuid" || lower == L"guid") {
-            std::random_device rd;
-            std::mt19937_64 rng(rd());
-            auto hx = [&]() { return static_cast<int>(rng() & 0xFFFF); };
-            wchar_t buf[40];
-            std::swprintf(buf, 40, L"%04X-%04X-%04X-%04X-%04X%04X%04X",
-                          hx(), hx(), hx() & 0x0FFF | 0x4000,
-                          hx() & 0x3FFF | 0x8000, hx(), hx(), hx());
-            UiCopyToClipboard(buf);
-            g_consoleStatus = std::wstring(L"UUID скопирован: ") + buf;
-            return;
-        }
-        if (lower.rfind(L"calc ", 0) == 0 || lower == L"calc") {
-            const std::string expr = ToUtf8(TrimWide(
-                value.size() > 5 ? value.substr(5) : L""));
-            const double result = EvalCalc(expr);
-            if (std::isnan(result)) {
-                g_consoleStatus =
-                    L"Калькулятор: calc <выражение>  (+ - * / % ^ ())";
-            } else {
-                wchar_t buf[64];
-                std::swprintf(buf, 64, L"%.10g", result);
-                g_consoleStatus = std::wstring(L"= ") + buf;
-                UiCopyToClipboard(buf);
-            }
-            return;
-        }
-        if (lower.rfind(L"timer ", 0) == 0) {
-            // timer 30s / 5m / 1h — countdown shown in the status bar.
-            const std::string spec = ToUtf8(TrimWide(value.substr(6)));
-            char unit = 's';
-            double num = 0;
-            if (sscanf(spec.c_str(), "%lf%c", &num, &unit) >= 1 && num > 0) {
-                const double mult = unit == 'h' || unit == 'H' ? 3600
-                    : unit == 'm' || unit == 'M' ? 60 : 1;
-                const int secs = static_cast<int>(num * mult);
-                if (secs > 0 && secs <= 86400) {
-                    state.timerEnd = Clock::now() +
-                        std::chrono::seconds(secs);
-                    state.timerLabel = L"Таймер " +
-                        std::to_wstring(secs) + L" с";
-                    g_consoleStatus = state.timerLabel + L" — пошёл!";
-                    return;
-                }
-            }
-            g_consoleStatus = L"Формат: timer <число><s|m|h>";
-            return;
-        }
         if (lower.rfind(L"note ", 0) == 0) {
             UiAddNote(TrimWide(value.substr(5)));
             g_consoleStatus = L"Заметка сохранена (data/notes.txt).";
@@ -2720,17 +2571,6 @@ namespace console_ui {
             UiOpenUrl(L"https://ru.wikipedia.org/wiki/Special:Search?search=" +
                       ToWide(UrlEncode(ToUtf8(TrimWide(value.substr(off))))));
             return;
-        }
-        if (lower == L"!" ) { g_consoleStatus = L"Формат: !<команда Windows>"; return; }
-        if (!value.empty() && value.front() == L'!') {
-            // !cmd — run a Windows command and show output on the terminal page.
-            const std::wstring cmd = TrimWide(value.substr(1));
-            if (!cmd.empty()) {
-                UiOpenTerminal();
-                UiTerminalRun(cmd);
-                state.focus = Focus::Page;
-                return;
-            }
         }
         if (lower.rfind(L"home ", 0) == 0) {
             // home <url> — set a custom homepage (persisted).
@@ -2792,22 +2632,6 @@ namespace console_ui {
             } else g_consoleStatus = L"Наведите мышь на ссылку.";
             return;
         }
-        if (lower == L"words" || lower == L"readtime") {
-            // Word count + rough reading time of the page text.
-            const std::wstring t = g_consolePageOpen
-                ? ToWide(g_currentText) : L"";
-            size_t words = 0;
-            bool inWord = false;
-            for (wchar_t ch : t) {
-                if (std::iswalnum(ch)) { if (!inWord) { ++words; inWord = true; } }
-                else inWord = false;
-            }
-            const int mins = std::max(1, static_cast<int>(words / 200));
-            g_consoleStatus = L"Слов: " + std::to_wstring(words) +
-                L" · чтение ~" + std::to_wstring(mins) + L" мин";
-            return;
-        }
-
         state.scrollOffset = 0;
         state.hoveredItem = -1;
         state.selectedItem = -1;
@@ -2869,17 +2693,6 @@ namespace console_ui {
             }
             state.settingsOpen = false;
             state.settingsHover = -1;
-        }
-
-        // Embedded shell: Ctrl+` opens cmd.exe in this console.
-        // Type `exit` (or close the shell) to return to the browser.
-        if (ctrl && code == VK_OEM_3) {
-            CloseImageViewer(state);
-            g_consoleStatus = L"Встроенный терминал: exit — вернуться.";
-            Render(state);
-            std::system("cmd.exe");
-            Render(state);
-            return;
         }
 
         // Ctrl+L also cancels field editing. (!shift — Ctrl+Shift+L is the
@@ -4111,19 +3924,6 @@ namespace console_ui {
                 DispatchPendingClick(state);
                 animTick = true;
             }
-            // Countdown timer: tick ~2×/s while armed, fire on expiry.
-            if (!state.timerLabel.empty()) {
-                if (Clock::now() >= state.timerEnd) {
-                    g_consoleStatus = state.timerLabel + L" — время вышло!";
-                    state.timerLabel.clear();
-                    animTick = true;
-                } else if (Clock::now() - lastAnim >
-                           std::chrono::milliseconds(500)) {
-                    lastAnim = Clock::now();
-                    animTick = true;
-                }
-            }
-
             // If a new page arrived, reset scroll/selection state.
             if (g_currentUrl != lastUrl) {
                 lastUrl = g_currentUrl;
