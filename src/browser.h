@@ -357,6 +357,8 @@ void ShowHistory();
 void ClearHistory();
 void ClearBookmarks();
 void AddBookmark();
+std::vector<std::wstring> LoadInputHistory();
+void SaveInputHistory(const std::vector<std::wstring>& items);
 
 // Shared WinHTTP session lifecycle (used by both console and GUI entry points).
 bool InitNetworkSession();
@@ -435,6 +437,7 @@ void UiOpenTerminal();
 bool UiTerminalRun(const std::wstring& cmdLine);
 std::string TermPageText(); // terminal transcript as page body
 std::string HelpPageText(); // browser://help page body
+std::string StatsPageText(); // browser://stats page body
 void UiOpenDownloadedFile(const std::wstring& name);
 void UiVerifyDownloadedFile(const std::wstring& name);
 void UiOpenExternalBrowser();

@@ -315,6 +315,11 @@ namespace console_ui {
         int selSX = 0, selSY = 0, selEX = 0, selEY = 0;
         bool screenSelValid = false;
         int ssX1 = 0, ssY1 = 0, ssX2 = 0, ssY2 = 0;
+        size_t selStartScroll = 0; // scrollOffset when the drag began
+        // Click counting for double/triple-click word/line selection.
+        int lastClickX = -1, lastClickY = -1;
+        int clickCount = 0;
+        Clock::time_point lastClickTime{};
         // Scroll/resize invalidates the screen-selection rectangle — the
         // rows it pointed at no longer hold the same text.
         size_t lastScrollOffset = static_cast<size_t>(-1);
@@ -335,6 +340,11 @@ namespace console_ui {
         SHORT height = 25;
         SHORT left = 0;
         SHORT top = 0;
+        // Frame buffer: Render() draws into `cells` via At(); FlushFrame()
+        // diffs against `prevCells` and writes only changed rows — the
+        // console is touched only where pixels actually differ.
+        std::vector<CHAR_INFO> cells;
+        std::vector<CHAR_INFO> prevCells;
     };
 
     void CloseImageViewer(State& state);
@@ -446,11 +456,15 @@ namespace console_ui {
     }
 
     void Clear(State& state) {
-        for (SHORT row = 0; row < state.height; ++row) {
-            COORD pos{state.left, static_cast<SHORT>(state.top + row)};
-            DWORD written = 0;
-            FillConsoleOutputCharacterW(state.output, L' ', state.width, pos, &written);
-            FillConsoleOutputAttribute(state.output, kText, state.width, pos, &written);
+        // (Re)build the frame buffer; a size change invalidates the
+        // previous frame so FlushFrame repaints everything.
+        const size_t n = static_cast<size_t>(state.width) * state.height;
+        if (state.cells.size() != n || state.prevCells.size() != n) {
+            state.cells.assign(n, CHAR_INFO{L' ', kText});
+            state.prevCells.clear();
+        } else {
+            std::fill(state.cells.begin(), state.cells.end(),
+                      CHAR_INFO{L' ', kText});
         }
     }
 
@@ -465,14 +479,17 @@ namespace console_ui {
             if (ch == L'\r' || ch == L'\n' || ch == L'\t') ch = L' ';
         if (static_cast<int>(text.size()) > limit)
             text.resize(static_cast<size_t>(limit));
-        COORD pos{static_cast<SHORT>(state.left + x),
-                  static_cast<SHORT>(state.top + y)};
-        SetConsoleCursorPosition(state.output, pos);
-        SetConsoleTextAttribute(state.output, color);
-        DWORD written = 0;
-        if (!text.empty())
-            WriteConsoleW(state.output, text.data(), static_cast<DWORD>(text.size()),
-                          &written, nullptr);
+        // Draw into the frame buffer — FlushFrame() pushes diffs to the
+        // real console once per render.
+        const size_t need = (static_cast<size_t>(y) + 1) * state.width;
+        if (state.cells.size() < need) return;
+        CHAR_INFO* row = state.cells.data() +
+            static_cast<size_t>(y) * state.width + x;
+        const size_t n = text.size();
+        for (size_t i = 0; i < n; ++i) {
+            row[i].Char.UnicodeChar = text[i];
+            row[i].Attributes = color;
+        }
     }
 
     // Draw a text line, highlighting every occurrence of `highlight`
@@ -972,6 +989,58 @@ namespace console_ui {
 
     void HandleLeftClick(State& state, int x, int y); // defined below
 
+    static bool IsWordChar(wchar_t ch) {
+        return std::iswalnum(ch) || ch == L'_' || ch == L'-' ||
+               ch == L'@' || ch == L'.' || ch == L'/' || ch == L':' ||
+               ch == L'?' || ch == L'=' || ch == L'&' || ch == L'%' ||
+               ch == L'+' || ch == L'#';
+    }
+
+    // Double-click: select the word under (x, y) as a screen rect.
+    void SelectWordAt(State& state, int x, int y) {
+        const size_t need =
+            (static_cast<size_t>(y) + 1) * state.width;
+        if (y < 0 || y >= state.height || state.cells.size() < need ||
+            x < 0 || x >= state.width) return;
+        const CHAR_INFO* row = state.cells.data() +
+            static_cast<size_t>(y) * state.width;
+        if (!IsWordChar(row[x].Char.UnicodeChar)) return;
+        int cx = x;
+        while (cx > 0 && IsWordChar(row[cx - 1].Char.UnicodeChar)) --cx;
+        int ex = x;
+        while (ex + 1 < state.width &&
+               IsWordChar(row[ex + 1].Char.UnicodeChar)) ++ex;
+        state.ssX1 = cx; state.ssY1 = y;
+        state.ssX2 = ex; state.ssY2 = y;
+        state.screenSelValid = true;
+        state.selAnchor = state.selCursor = -1;
+        g_consoleStatus = L"Слово выделено — c / Ctrl+C копирует.";
+    }
+
+    // Triple-click: select the whole page line under y (falls back to
+    // the screen row when outside the content area).
+    void SelectLineAt(State& state, int y) {
+        const int contentTop = 6;
+        const int cap = state.pageCapacity > 0
+            ? state.pageCapacity : state.height - 9;
+        if (g_consolePageOpen && y >= contentTop &&
+            y < contentTop + cap && state.pageLineCount > 0) {
+            const long lineIdx = std::min(
+                static_cast<long>(state.scrollOffset) + (y - contentTop),
+                static_cast<long>(state.pageLineCount) - 1);
+            state.selAnchor = state.selCursor = lineIdx;
+            state.selectMode = false;
+            state.screenSelValid = false;
+            g_consoleStatus = L"Строка выделена — c / Ctrl+C копирует.";
+            return;
+        }
+        state.ssX1 = 0; state.ssY1 = y;
+        state.ssX2 = state.width - 1; state.ssY2 = y;
+        state.screenSelValid = true;
+        state.selAnchor = state.selCursor = -1;
+        g_consoleStatus = L"Строка выделена — c / Ctrl+C копирует.";
+    }
+
     // End a drag: tiny movement = plain click (dispatch it), otherwise
     // commit the rectangle as the screen selection.
     void FinishScreenSel(State& state, int ex, int ey) {
@@ -983,12 +1052,67 @@ namespace console_ui {
         // Jitter under ~3 cells is a click, not a selection — otherwise
         // every ordinary click would "select" a couple of characters.
         if (ddx + ddy <= 3) {
+            // Double-click selects the word, triple-click the line —
+            // like a browser/terminal. Single click still dispatches.
+            const auto now = Clock::now();
+            const bool sameSpot = state.lastClickX >= 0 &&
+                std::abs(ex - state.lastClickX) <= 1 &&
+                std::abs(ey - state.lastClickY) <= 1 &&
+                now - state.lastClickTime < std::chrono::milliseconds(600);
+            state.clickCount = sameSpot ? state.clickCount + 1 : 1;
+            state.lastClickX = ex; state.lastClickY = ey;
+            state.lastClickTime = now;
+            if (state.clickCount == 2) {
+                SelectWordAt(state, ex, ey);
+                state.clickCount = 0;
+                return;
+            }
+            if (state.clickCount >= 3) {
+                SelectLineAt(state, ey);
+                state.clickCount = 0;
+                return;
+            }
             HandleLeftClick(state, state.selSX, state.selSY);
         } else {
             state.ssX1 = std::min(state.selSX, ex);
             state.ssY1 = std::min(state.selSY, ey);
             state.ssX2 = std::max(state.selSX, ex);
             state.ssY2 = std::max(state.selSY, ey);
+            // A drag touching the page-content area also anchors a
+            // page-line selection: scrolling clears the screen rectangle
+            // but the page selection re-anchors to the text, so the
+            // selection survives scrolling (copy falls back to whole
+            // lines — the precise rectangle stays available until then).
+            const int contentTop = 6;
+            const int cap = state.pageCapacity > 0
+                ? state.pageCapacity : state.height - 9;
+            const int cLast = contentTop + std::max(1, cap) - 1;
+            // Both drag endpoints may sit on different scroll offsets
+            // (auto-scroll moved the page mid-drag) — anchor each to the
+            // offset that was active when its row was captured.
+            const bool touchA = state.selSY >= contentTop &&
+                                state.selSY <= cLast;
+            const bool touchB = state.selEY >= contentTop &&
+                                state.selEY <= cLast;
+            if (g_consolePageOpen && state.pageLineCount > 0 &&
+                (touchA || touchB)) {
+                const long lineA = touchA
+                    ? static_cast<long>(state.selStartScroll) +
+                      (state.selSY - contentTop) : -1;
+                const long lineB = touchB
+                    ? static_cast<long>(state.scrollOffset) +
+                      (state.selEY - contentTop) : -1;
+                long lo, hi;
+                if (lineA >= 0 && lineB >= 0) {
+                    lo = std::min(lineA, lineB);
+                    hi = std::max(lineA, lineB);
+                } else if (lineA >= 0) { lo = hi = lineA; }
+                else { lo = hi = lineB; }
+                const long maxLine = static_cast<long>(state.pageLineCount) - 1;
+                state.selAnchor = std::clamp(lo, 0L, maxLine);
+                state.selCursor = std::clamp(hi, 0L, maxLine);
+                state.selectMode = false;
+            }
             state.screenSelValid = true;
             g_consoleStatus = L"Выделено — c / Ctrl+C копирует.";
         }
@@ -1002,16 +1126,17 @@ namespace console_ui {
         const int x2 = std::max(state.ssX1, state.ssX2);
         const int y1 = std::min(state.ssY1, state.ssY2);
         const int y2 = std::max(state.ssY1, state.ssY2);
+        const size_t cellCount =
+            static_cast<size_t>(state.width) * state.height;
+        if (state.cells.size() < cellCount) return {};
         std::wstring out;
         for (int y = y1; y <= y2; ++y) {
             const int w = x2 - x1 + 1;
             if (w <= 0) continue;
             std::wstring buf(static_cast<size_t>(w), L' ');
-            const COORD pos{static_cast<SHORT>(state.left + x1),
-                            static_cast<SHORT>(state.top + y)};
-            DWORD rd = 0;
-            ReadConsoleOutputCharacterW(state.output, buf.data(),
-                                        static_cast<DWORD>(w), pos, &rd);
+            const CHAR_INFO* row = state.cells.data() +
+                static_cast<size_t>(y) * state.width + x1;
+            for (int i = 0; i < w; ++i) buf[static_cast<size_t>(i)] = row[i].Char.UnicodeChar;
             size_t end = buf.size();
             while (end > 0 && buf[end - 1] == L' ') --end;
             buf.resize(end);
@@ -1044,16 +1169,79 @@ namespace console_ui {
         y1 = std::clamp(y1, 0, state.height - 1);
         y2 = std::clamp(y2, 0, state.height - 1);
         if (x1 == x2 && y1 == y2) return;
+        const size_t cellCount =
+            static_cast<size_t>(state.width) * state.height;
+        if (state.cells.size() < cellCount) return;
         for (int y = y1; y <= y2; ++y) {
             const int w = x2 - x1 + 1;
             std::wstring buf(static_cast<size_t>(w), L' ');
-            const COORD pos{static_cast<SHORT>(state.left + x1),
-                            static_cast<SHORT>(state.top + y)};
-            DWORD rd = 0;
-            ReadConsoleOutputCharacterW(state.output, buf.data(),
-                                        static_cast<DWORD>(w), pos, &rd);
+            const CHAR_INFO* row = state.cells.data() +
+                static_cast<size_t>(y) * state.width + x1;
+            for (int i = 0; i < w; ++i) buf[static_cast<size_t>(i)] = row[i].Char.UnicodeChar;
             At(state, x1, y, buf, kSelected, w);
         }
+    }
+
+    // Push the frame to the console: compare against the previous frame
+    // and WriteConsoleOutput only the rows that actually changed.
+    void FlushFrame(State& state) {
+        const size_t w = state.width;
+        const size_t n = w * static_cast<size_t>(state.height);
+        if (state.cells.size() != n) return;
+        const bool full = state.prevCells.size() != n;
+        // Rows covered by the ANSI image viewer are skipped — its pixels
+        // live outside the cell buffer; CloseImageViewer forces a repaint.
+        const int skipTop = state.viewingImage ? 4 : -1;
+        const int skipBottom = state.viewingImage ? state.height - 3 : -1;
+        std::wstring chars(static_cast<size_t>(w), L' ');
+        std::vector<WORD> attrs(static_cast<size_t>(w));
+        for (int y = 0; y < state.height; ++y) {
+            if (y >= skipTop && y <= skipBottom) continue;
+            const size_t row = static_cast<size_t>(y) * w;
+            bool dirty = full;
+            if (!dirty) {
+                for (size_t x = 0; x < w; ++x) {
+                    const CHAR_INFO& a = state.cells[row + x];
+                    const CHAR_INFO& b = state.prevCells[row + x];
+                    if (a.Char.UnicodeChar != b.Char.UnicodeChar ||
+                        a.Attributes != b.Attributes) { dirty = true; break; }
+                }
+            }
+            if (!dirty) continue;
+            COORD pos{static_cast<SHORT>(state.left),
+                      static_cast<SHORT>(state.top + y)};
+            for (size_t x = 0; x < w; ++x) {
+                chars[x] = state.cells[row + x].Char.UnicodeChar;
+                attrs[x] = state.cells[row + x].Attributes;
+            }
+            DWORD written = 0;
+            WriteConsoleOutputCharacterW(state.output, chars.data(),
+                                         static_cast<DWORD>(w), pos, &written);
+            WriteConsoleOutputAttribute(state.output, attrs.data(),
+                                        static_cast<DWORD>(w), pos, &written);
+        }
+        state.prevCells = state.cells;
+    }
+
+    // Status-line color: errors red, confirmations green, the rest muted.
+    // Derived from raw console attributes so it works in every theme.
+    WORD StatusColor(const std::wstring& status, bool loading) {
+        if (loading) return kAccent;
+        static const wchar_t* kErr[] = {
+            L"Не ", L"Нельзя", L"Ошибка", L"недоступ", L"Отмена",
+            L"отмен", L"fail", L"Превышен", L"не найд", L"Пусто" };
+        static const wchar_t* kOk[] = {
+            L"скопирован", L"сохранен", L"Сохранено", L"готов",
+            L"очищен", L"Добавлен", L"открыт", L"Загружено",
+            L"Обновлено", L"Выделено", L"строка выделена",
+            L"Слово выделено", L"Автообновление" };
+        for (const wchar_t* w : kErr)
+            if (status.find(w) != std::wstring::npos)
+                return FOREGROUND_RED | FOREGROUND_INTENSITY;
+        for (const wchar_t* w : kOk)
+            if (status.find(w) != std::wstring::npos)
+                return FOREGROUND_GREEN | FOREGROUND_INTENSITY;
+        return kMuted;
     }
 
     void Render(State& state) {
@@ -1165,7 +1353,7 @@ namespace console_ui {
             if (!statusLine.empty())
                 Center(state, height - 1,
                        Shorten(statusLine, static_cast<size_t>(width - 4)),
-                       loading ? kAccent : kMuted);
+                       StatusColor(statusLine, loading));
         } else {
             // Browser chrome: row 0 = tabs, row 1 = nav buttons,
             // rows 2-4 = omnibox (address bar), content below.
@@ -1509,7 +1697,7 @@ namespace console_ui {
             }
             At(state, 2, height - 3,
                Shorten(status, static_cast<size_t>(width - 4)),
-               loading ? kAccent : kMuted, width - 4);
+               StatusColor(status, loading), width - 4);
             // Scroll position indicator, right-aligned on the status row.
             if (state.pageLineCount > static_cast<size_t>(state.pageCapacity)) {
                 const size_t cap = static_cast<size_t>(state.pageCapacity);
@@ -1555,6 +1743,7 @@ namespace console_ui {
         DrawSuggestions(state);
         DrawSettingsMenu(state);
         DrawScreenSelection(state); // terminal-style highlight on top
+        FlushFrame(state);          // diff-push the finished frame
 
         const int cursorX = std::clamp(
             state.searchLeft + static_cast<int>(state.caret -
@@ -1703,6 +1892,7 @@ namespace console_ui {
         state.viewingImage = false;
         state.imgRgb.clear();
         state.imgW = state.imgH = 0;
+        state.prevCells.clear(); // force full repaint over the overlay area
     }
 
     // Paint the image viewer overlay: half-block "▀" cells, fg = top pixel,
@@ -1792,6 +1982,7 @@ namespace console_ui {
         if (state.inputHistory.size() > 80)
             state.inputHistory.erase(state.inputHistory.begin());
         state.historyIndex = state.inputHistory.size();
+        SaveInputHistory(state.inputHistory);
         state.browsingHistory = false;
         state.historyDraft.clear();
     }
@@ -2167,7 +2358,11 @@ namespace console_ui {
             state.focus = Focus::Page;
             return;
         }
-        if (lower == L"stats") { UiShowStats(); return; }
+        if (lower == L"stats") {
+            UiOpenInternalPage(L"stats");
+            state.focus = Focus::Page;
+            return;
+        }
         if (lower == L"terminal" || lower == L"term" || lower == L"cmd") {
             UiOpenTerminal();
             state.focus = Focus::Page;
@@ -3212,10 +3407,11 @@ namespace console_ui {
             return;
         }
 
-        // Only plain first presses count as clicks. DOUBLE_CLICK is ignored:
-        // the first click already opened the link, and a second hit would land
-        // on whatever row now occupies those coordinates on the new page.
-        const bool isClick = mouse.dwEventFlags == 0 &&
+        // DOUBLE_CLICK is accepted too: click-vs-drag is decided on
+        // release, and the second press of a double-click must arm the
+        // click counter for word/line selection.
+        const bool isClick = (mouse.dwEventFlags == 0 ||
+            mouse.dwEventFlags == DOUBLE_CLICK) &&
             (mouse.dwButtonState & FROM_LEFT_1ST_BUTTON_PRESSED) != 0;
 
         if (mouse.dwEventFlags == MOUSE_MOVED) {
@@ -3225,6 +3421,21 @@ namespace console_ui {
                 if ((mouse.dwButtonState & FROM_LEFT_1ST_BUTTON_PRESSED) != 0) {
                     state.selEX = x;
                     state.selEY = y;
+                    // Auto-scroll while dragging near the content edges —
+                    // like a terminal extending the selection off-screen.
+                    if (g_consolePageOpen && state.pageCapacity > 0) {
+                        const int contentTop = 6;
+                        const int cap = state.pageCapacity;
+                        const size_t maxOff =
+                            state.pageLineCount > static_cast<size_t>(cap)
+                                ? state.pageLineCount - static_cast<size_t>(cap)
+                                : 0;
+                        if (y <= contentTop && state.scrollOffset > 0)
+                            --state.scrollOffset;
+                        else if (y >= contentTop + cap - 1 &&
+                                 state.scrollOffset < maxOff)
+                            ++state.scrollOffset;
+                    }
                 } else {
                     FinishScreenSel(state, x, y);
                 }
@@ -3286,6 +3497,7 @@ namespace console_ui {
         state.mouseSelDown = true;
         state.selSX = state.selEX = x;
         state.selSY = state.selEY = y;
+        state.selStartScroll = state.scrollOffset;
         state.screenSelValid = false;
         state.focus = Focus::Page;
         return;
@@ -3418,6 +3630,11 @@ namespace console_ui {
         SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
 
         g_consoleUiMode = true;
+        // Restore omnibox/terminal command history from the last session.
+        state.inputHistory = LoadInputHistory();
+        if (state.inputHistory.size() > 80)
+            state.inputHistory.resize(80);
+        state.historyIndex = state.inputHistory.size();
         LoadThemePacks();
         LoadThemeSetting();
         // Maintenance: once-a-day data backup + cache size cap.

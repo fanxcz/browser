@@ -1145,7 +1145,7 @@ struct LoadResult {
 };
 
 std::optional<LoadResult> g_finishedLoad;
-std::optional<LoadJob> g_queuedJob;
+std::deque<LoadJob> g_queuedJobs; // FIFO — rapid commands no longer drop each other
 std::thread g_loadThread;
 
 // ---------------------------------------------------------------------------
@@ -1277,6 +1277,13 @@ void LoadWorker(LoadJob job) {
                 result.ok = false;
                 result.statusText = L"Ответ ИИ больше не доступен.";
             }
+        } else if (job.url == std::wstring(kInternalPrefix) + L"stats") {
+            result.outcome.ok = true;
+            result.outcome.finalUrl = job.url;
+            result.outcome.title = "Статистика";
+            result.outcome.text = StatsPageText();
+            result.ok = true;
+            result.statusText = L"Статистика сети, кэша и сессии.";
         } else if (job.url == std::wstring(kInternalPrefix) + L"help") {
             result.outcome.ok = true;
             result.outcome.finalUrl = job.url;
@@ -1373,9 +1380,10 @@ void QueueOrStart(const LoadJob& job) {
     if (g_loadRunning.load()) {
         {
             std::lock_guard<std::mutex> lock(g_loadMutex);
-            g_queuedJob = job;
+            if (g_queuedJobs.size() < 16) // bounded: don't grow forever
+                g_queuedJobs.push_back(job);
         }
-        g_consoleStatus = L"Загрузка… (текущий запрос продолжится, новый — в очереди)";
+        g_consoleStatus = L"Загрузка… (в очереди)";
         return;
     }
     StartJobNow(job);
@@ -1590,6 +1598,49 @@ static std::wstring FmtBytes(uint64_t bytes) {
     if (bytes >= 1024)
         return std::to_wstring(bytes / 1024) + L" КБ";
     return std::to_wstring(bytes) + L" Б";
+}
+
+// browser://stats page body — network/cache/download counters.
+std::string StatsPageText() {
+    uint64_t cacheBytes = 0;
+    size_t cacheFiles = 0;
+    std::error_code ec;
+    if (fs::exists(CacheDirPath(), ec)) {
+        for (const auto& entry : fs::recursive_directory_iterator(
+                 CacheDirPath(), fs::directory_options::skip_permission_denied,
+                 ec)) {
+            if (entry.is_regular_file(ec)) {
+                cacheBytes += entry.file_size(ec);
+                ++cacheFiles;
+            }
+        }
+    }
+    size_t dlFiles = 0;
+    if (fs::exists(DownloadsDirPath(), ec)) {
+        for (const auto& entry : fs::recursive_directory_iterator(
+                 DownloadsDirPath(),
+                 fs::directory_options::skip_permission_denied, ec)) {
+            if (entry.is_regular_file(ec)) ++dlFiles;
+        }
+    }
+    const std::wstring text =
+        L"Статистика браузера\n"
+        L"\n"
+        L"■ СЕТЬ\n"
+        L"  HTTP-запросов: " + std::to_wstring(g_networkRequests.load()) +
+        L"\n  Отдано из кэша: " + std::to_wstring(g_cacheHits.load()) +
+        L"\n  Сейчас офлайн: " + std::wstring(g_offline ? L"да" : L"нет") +
+        L"\n\n■ ХРАНИЛИЩЕ\n"
+        L"  Файлов в кэше: " + std::to_wstring(cacheFiles) +
+        L" (" + FmtBytes(cacheBytes) + L")\n"
+        L"  Файлов в загрузках: " + std::to_wstring(dlFiles) +
+        L"\n  Скачано всего: " + FmtBytes(g_downloadedBytes.load()) +
+        L"\n\n■ СЕССИЯ\n"
+        L"  Открытых вкладок: " + std::to_wstring(UiTabCount()) +
+        L"\n  Активная вкладка: " +
+        std::to_wstring(UiActiveTabIndex() + 1) +
+        L"\n  Движок: Browser Console " + ToWide(kAppVersion) + L"\n";
+    return ToUtf8(text);
 }
 
 void UiShowStats() {
@@ -1997,6 +2048,10 @@ std::wstring UiGetClipboardText() {
 }
 
 void UiCancelLoad() {
+    {
+        std::lock_guard<std::mutex> lock(g_loadMutex);
+        g_queuedJobs.clear();
+    }
     if (!g_loadRunning.load()) return;
     g_loadCancel.store(true);
     g_consoleStatus = L"Отмена загрузки…";
@@ -2666,10 +2721,17 @@ void SaveTabs() {
     for (const TabState& tab : g_tabs) {
         if (!tab.pageOpen || tab.url.empty())
             continue;
-        // Internal pages: only downloads is restorable (worker supports it).
-        if (IsInternalPageUrl(tab.url) &&
-            tab.url.find(L"downloads") == std::wstring::npos)
-            continue;
+        // Internal pages restorable through the load worker:
+        // downloads, terminal, help (history/bookmarks build
+        // synchronously and stay session-only).
+        if (IsInternalPageUrl(tab.url)) {
+            const bool restorable =
+                tab.url.find(L"downloads") != std::wstring::npos ||
+                tab.url.find(L"terminal") != std::wstring::npos ||
+                tab.url.find(L"help") != std::wstring::npos ||
+                tab.url.find(L"stats") != std::wstring::npos;
+            if (!restorable) continue;
+        }
         file << ToUtf8(tab.url);
         if (tab.view.scrollOffset)
             file << '\t' << tab.view.scrollOffset;
@@ -3009,9 +3071,9 @@ bool PollAsyncLoad() {
         std::optional<LoadJob> queued;
         {
             std::lock_guard<std::mutex> lock(g_loadMutex);
-            if (g_queuedJob) {
-                queued = std::move(*g_queuedJob);
-                g_queuedJob.reset();
+            if (!g_queuedJobs.empty()) {
+                queued = std::move(g_queuedJobs.front());
+                g_queuedJobs.pop_front();
             }
         }
         if (queued) {

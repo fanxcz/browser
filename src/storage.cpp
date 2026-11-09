@@ -299,6 +299,23 @@ std::vector<std::wstring> LoadBookmarks() {
     return ReadUrlFile(BookmarksFilePath());
 }
 
+// Omnibox/terminal command history — persisted so terminal commands and
+// URL recalls survive restarts (data/commands.txt, one per line, UTF-8).
+namespace {
+fs::path CommandsFilePath() { return DataDirPath() / L"commands.txt"; }
+}
+
+std::vector<std::wstring> LoadInputHistory() {
+    return ReadUrlFile(CommandsFilePath());
+}
+
+void SaveInputHistory(const std::vector<std::wstring>& items) {
+    std::ofstream file(CommandsFilePath(), std::ios::trunc);
+    if (!file) return;
+    for (const auto& item : items)
+        file << ToUtf8(item) << '\n';
+}
+
 void ShowBookmarks() {
     const auto bookmarks = LoadBookmarks();
     std::cout << "\n--- BOOKMARKS ---\n";
