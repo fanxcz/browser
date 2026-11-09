@@ -949,7 +949,9 @@ namespace console_ui {
         state.mouseSelDown = false;
         const int ddx = std::abs(ex - state.selSX);
         const int ddy = std::abs(ey - state.selSY);
-        if (ddx + ddy <= 1) {
+        // Jitter under ~3 cells is a click, not a selection — otherwise
+        // every ordinary click would "select" a couple of characters.
+        if (ddx + ddy <= 3) {
             HandleLeftClick(state, state.selSX, state.selSY);
         } else {
             state.ssX1 = std::min(state.selSX, ex);
@@ -2306,6 +2308,12 @@ namespace console_ui {
             return;
         }
         if (ctrl && code == 'C') {
+            // An active screen selection always wins — even from the
+            // omnibox, like a real terminal.
+            if (state.screenSelValid) {
+                CopySelectionOrUrl(state);
+                return;
+            }
             // In the omnibox: copy the selection or the whole input.
             if (state.focus == Focus::Search && !state.input.empty()) {
                 if (HasInputSel(state)) {
