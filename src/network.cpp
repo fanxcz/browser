@@ -400,6 +400,11 @@ static Response RequestOnce(const std::wstring& url, CacheMode mode,
         return cachedResponse;
     }
 
+    // User-enabled offline mode: serve whatever is cached, never touch
+    // the network. Stale cache beats no page.
+    if (g_userOffline)
+        return haveCached ? cachedResponse : Response{};
+
     // A pooled keep-alive connection can be half-dead (server closed it
     // while idle): the first send then fails. Retry once on a fresh
     // connection instead of surfacing a spurious load error.

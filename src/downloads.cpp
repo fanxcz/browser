@@ -772,7 +772,8 @@ FetchOutcome BuildDownloadsPage() {
     const auto verified = LoadVerifiedDownloads();
     const fs::path dirPath = DownloadsDirPath();
 
-    std::string text;
+    std::string text = "Загрузки — файлы из папки downloads/.\n"
+                       "Enter — открыть, x — отменить, v — sha256.\n\n";
     for (size_t i = 0; i < items.size(); ++i) {
         const DlEntry& item = items[i];
         text += std::to_string(i + 1) + ". " + ToUtf8(item.name) +
@@ -798,8 +799,8 @@ FetchOutcome BuildDownloadsPage() {
         text += '\n';
     }
     if (items.empty())
-        text = "Загрузок пока нет. Нажмите d на ссылке или изображении, "
-               "чтобы скачать файл.";
+        text += "Загрузок пока нет. Нажмите d на ссылке или изображении, "
+                "чтобы скачать файл.";
 
     out.text = NormalizeDisplayText(text);
     return out;

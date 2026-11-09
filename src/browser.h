@@ -165,6 +165,7 @@ struct FetchOutcome {
 extern int g_refreshSeconds;
 extern std::string g_refreshUrl;
 extern bool g_isFeed;   // current page is an RSS/Atom feed view
+extern bool g_userOffline; // user-enabled offline mode (cache only)
 
 // A navigation request executed on a worker thread.
 struct LoadJob {
@@ -417,6 +418,11 @@ TabViewState UiCycleTab(int delta, const TabViewState& view);
 TabViewState UiSwitchTabTo(size_t index, const TabViewState& view);
 TabViewState UiOpenInNewTab(const std::wstring& url, const TabViewState& view);
 TabViewState UiReopenClosedTab(const TabViewState& view);
+TabViewState UiCloseTabsOnSide(bool before, const TabViewState& view);
+TabViewState UiMoveTab(int delta, const TabViewState& view);
+void UiSetTabLabel(const std::wstring& label);
+void UiToggleTabPin();
+bool UiTabPinned(size_t index);
 bool UiCopyToClipboard(const std::wstring& text);
 std::wstring UiGetClipboardText();
 size_t UiTabCount();
@@ -473,6 +479,35 @@ void UiShowTabs();
 void UiReaderMode();
 TabViewState UiOpenInBackgroundTab(const std::wstring& url,
                                    const TabViewState& view);
+
+// Feature pack helpers (app.cpp).
+bool UiOfflineEnabled();
+void UiSetOffline(bool on);
+void UiApplyOfflineSetting();
+TabViewState UiSearchInBackgroundTab(const std::string& query,
+                                     const TabViewState& view);
+void UiHardReload();
+void UiViewSourceUrl(const std::wstring& rawUrl);
+void UiImagesPage();
+void UiLinksPage();
+void UiNoteDelete(size_t index1);
+void UiNotesClear();
+void UiLucky();
+void UiSessionsPage();
+void UiRestoreSession(const std::wstring& name);
+bool UiImagesEnabled();
+void UiSetImagesEnabled(bool on);
+void UiApplyImagesSetting();
+bool UiStatusBarOn();
+void UiSetStatusBar(bool on);
+void UiApplyStatusBarSetting();
+bool UiPrefetchEnabled();
+void UiSetPrefetch(bool on);
+void UiApplyPrefetchSetting();
+int UiZoomPercent();
+void UiSetZoomPercent(int percent);
+void UiApplyZoomSetting();
+
 // Startup maintenance: daily data backup + cache size eviction.
 void MaybeDailyBackup();
 void EvictCacheOverflow();

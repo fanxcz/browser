@@ -75,6 +75,11 @@ bool g_isFeed = false;
 FetchOutcome g_lastAiOutcome;
 std::wstring g_consoleStatus;
 bool g_offline = false;
+bool g_userOffline = false;
+bool g_showImages = true;
+bool g_statusBar = true;
+bool g_prefetch = true;
+int g_zoomPercent = 100;
 std::vector<Link> g_currentLinks;
 std::vector<PageImage> g_currentImages;
 std::vector<FormField> g_currentFields;
@@ -280,6 +285,8 @@ struct TabState {
     // Per-tab back/forward stack (console UI only).
     std::vector<std::wstring> nav;
     size_t navIndex = 0;
+    std::wstring label;         // custom tab name (tabname command)
+    bool pinned = false;        // pinned tabs resist accidental closing
 };
 
 static std::vector<TabState> g_tabs;
@@ -720,7 +727,22 @@ static FetchOutcome SearchProviders(const std::string& query,
     FetchOutcome last;
     last.error = L"Поисковая выдача недоступна.";
 
-    for (const auto& provider : kProviders) {
+    // Preferred provider from settings (`engine` command) goes first;
+    // the rest keep their built-in fallback order.
+    int order[3] = {0, 1, 2};
+    const std::wstring pref = UiGetSetting(L"engine");
+    if (!pref.empty()) {
+        for (size_t i = 0; i < 3; ++i) {
+            if (LowerWide(pref) == LowerWide(kProviders[i].name) ||
+                pref.find(kProviders[i].name) != std::wstring::npos) {
+                std::swap(order[0], order[i]);
+                break;
+            }
+        }
+    }
+
+    for (int oi = 0; oi < 3; ++oi) {
+        const auto& provider = kProviders[order[oi]];
         if (cancel && cancel->load()) {
             last.cancelled = true;
             last.error = L"Поиск отменён.";
@@ -1586,7 +1608,7 @@ static void AutoPrefetchWorker(std::vector<std::wstring> urls) {
 
 static void MaybeAutoPrefetch(const LoadJob& job,
                               const FetchOutcome& outcome) {
-    if (!g_consoleUiMode || !job.addToNavigation ||
+    if (!g_consoleUiMode || !g_prefetch || !job.addToNavigation ||
         job.kind != LoadJob::Kind::Url || !outcome.ok)
         return;
     std::vector<std::wstring> urls;
@@ -2189,8 +2211,25 @@ std::string HelpPageText() {
         "  Ctrl+T/W — новая/закрыть, Ctrl+Tab — следующая,\n"
         "  Ctrl+1..9 — вкладка по номеру, Ctrl+Shift+T — вернуть.\n"
         "  dup / reopen — дублировать/переоткрыть вкладку.\n"
+        "  tab <n> — перейти, tabname <имя> — переименовать,\n"
+        "  pin/unpin — закрепить, close-left/right — закрыть соседние,\n"
+        "  tabmove left|right — переместить, new/close — алиасы.\n"
         "  s — сохранить HTML, Shift+S — Markdown.\n"
         "  Ctrl+D — закладка, Ctrl+S — сохранить, Ctrl+Y — история.\n"
+        "\n"
+        "■ ЕЩЁ КОМАНДЫ\n"
+        "  Ctrl+Enter в адресной строке — открыть во вкладке фоном.\n"
+        "  dl <url> / download <url> — скачать, up — на уровень выше.\n"
+        "  hard-reload — обновить мимо кэша, offline on|off — только кэш.\n"
+        "  engine <ddg|bing|google> — поисковик, source <url> — исходник.\n"
+        "  images / linkpage — страницы картинок и ссылок, saveimg —\n"
+        "  скачать картинку, imglinks — скопировать URL картинок.\n"
+        "  copy url|domain|title|text|links|images|selection — буфер.\n"
+        "  find <текст> — найти на странице, ' — регистр, Shift+F3 — назад.\n"
+        "  theme <имя> — тема, zoom in|out|<%> — масштаб, F11 — полный\n"
+        "  экран, statusbar/images/prefetch on|off — переключатели.\n"
+        "  note del <n> / notes clear — заметки, lucky — случайная страница,\n"
+        "  snapshot — снимок экрана, sessions / restore <имя> — сессии.\n"
         "\n"
         "■ СИСТЕМА\n"
         "  stats — статистика сети и кэша.\n"
@@ -2672,6 +2711,10 @@ static TabViewState CloseTabAt(size_t index, const TabViewState& view,
 
 TabViewState UiCloseTab(const TabViewState& view) {
     EnsureTabs();
+    if (g_tabs[g_activeTab].pinned) {
+        g_consoleStatus = L"Вкладка закреплена — сначала выполните unpin.";
+        return view;
+    }
     if (g_tabs.size() <= 1) {
         // Last tab: turn it into a fresh "new tab" page instead of closing.
         UiSaveViewState(view);
@@ -2693,6 +2736,10 @@ TabViewState UiCloseTabIndex(size_t index, const TabViewState& view) {
     EnsureTabs();
     if (index >= g_tabs.size())
         return view;
+    if (g_tabs[index].pinned) {
+        g_consoleStatus = L"Вкладка закреплена — сначала выполните unpin.";
+        return view;
+    }
     if (g_tabs.size() <= 1) {
         if (index == g_activeTab)
             return UiCloseTab(view);
@@ -2713,13 +2760,94 @@ TabViewState UiCloseOtherTabs(const TabViewState& view) {
         return view;
     }
     UiSaveViewState(view);
-    // Close from the back so indices stay valid; keep the active tab.
+    // Close from the back so indices stay valid; keep the active tab
+    // and every pinned tab.
+    size_t kept = 0;
     for (size_t i = g_tabs.size(); i-- > 0;) {
-        if (i == g_activeTab) continue;
+        if (i == g_activeTab || g_tabs[i].pinned) { ++kept; continue; }
         CloseTabAt(i, view, false);
     }
     SaveTabs();
-    g_consoleStatus = L"Закрыты все вкладки, кроме текущей.";
+    g_consoleStatus = kept > 1
+        ? L"Закрыты все незакреплённые вкладки, кроме текущей."
+        : L"Закрыты все вкладки, кроме текущей.";
+    return g_tabs[g_activeTab].view;
+}
+
+// Close every tab before (before=true) or after the active one.
+TabViewState UiCloseTabsOnSide(bool before, const TabViewState& view) {
+    EnsureTabs();
+    size_t closed = 0;
+    UiSaveViewState(view);
+    if (before) {
+        // CloseTabAt shifts g_activeTab down for each removal, so always
+        // pick the lowest unpinned tab left of the active one.
+        for (;;) {
+            size_t victim = g_tabs.size();
+            for (size_t i = 0; i < g_activeTab && i < g_tabs.size(); ++i)
+                if (!g_tabs[i].pinned) { victim = i; break; }
+            if (victim == g_tabs.size()) break;
+            CloseTabAt(victim, view, false);
+            ++closed;
+        }
+    } else {
+        for (size_t i = g_tabs.size(); i-- > g_activeTab + 1;) {
+            if (g_tabs[i].pinned) continue;
+            CloseTabAt(i, view, false);
+            ++closed;
+        }
+    }
+    SaveTabs();
+    g_consoleStatus = closed
+        ? L"Закрыто вкладок: " + std::to_wstring(closed) + L"."
+        : L"Нечего закрывать (закреплённые вкладки пропущены).";
+    return g_tabs[g_activeTab].view;
+}
+
+// Rename the active tab (empty label restores the automatic title).
+void UiSetTabLabel(const std::wstring& label) {
+    EnsureTabs();
+    TabState& tab = g_tabs[g_activeTab];
+    tab.label = label;
+    // Strip characters that would break the tabs.txt line format.
+    for (wchar_t& c : tab.label)
+        if (c == L'\t' || c == L'\r' || c == L'\n') c = L' ';
+    SaveTabs();
+    g_consoleStatus = tab.label.empty()
+        ? L"Имя вкладки сброшено."
+        : L"Вкладка переименована: " + tab.label;
+}
+
+void UiToggleTabPin() {
+    EnsureTabs();
+    TabState& tab = g_tabs[g_activeTab];
+    tab.pinned = !tab.pinned;
+    SaveTabs();
+    g_consoleStatus = tab.pinned
+        ? L"Вкладка закреплена."
+        : L"Вкладка откреплена.";
+}
+
+// Move the active tab one slot left (-1) or right (+1).
+TabViewState UiMoveTab(int delta, const TabViewState& view) {
+    EnsureTabs();
+    if (g_tabs.size() < 2) {
+        g_consoleStatus = L"Перемещать некуда — вкладка одна.";
+        return view;
+    }
+    const long long target =
+        static_cast<long long>(g_activeTab) + delta;
+    if (target < 0 || target >= static_cast<long long>(g_tabs.size())) {
+        g_consoleStatus = L"Вкладка уже на краю.";
+        return view;
+    }
+    UiSaveViewState(view);
+    std::swap(g_tabs[g_activeTab],
+              g_tabs[static_cast<size_t>(target)]);
+    g_activeTab = static_cast<size_t>(target);
+    LoadTabToGlobals(g_tabs[g_activeTab]);
+    SaveTabs();
+    g_consoleStatus = L"Вкладка перемещена.";
     return g_tabs[g_activeTab].view;
 }
 
@@ -2750,6 +2878,11 @@ size_t UiTabCount() {
     return g_tabs.size();
 }
 
+bool UiTabPinned(size_t index) {
+    EnsureTabs();
+    return index < g_tabs.size() && g_tabs[index].pinned;
+}
+
 size_t UiActiveTabIndex() {
     EnsureTabs();
     return g_activeTab;
@@ -2760,6 +2893,8 @@ std::wstring UiTabTitle(size_t index) {
     if (index >= g_tabs.size())
         return L"";
     const TabState& tab = g_tabs[index];
+    if (!tab.label.empty())
+        return tab.label;
     if (!tab.pageOpen)
         return L"Новая вкладка";
     if (!tab.title.empty())
@@ -2821,39 +2956,52 @@ void SaveTabs() {
             if (!restorable) continue;
         }
         file << ToUtf8(tab.url);
-        if (tab.view.scrollOffset)
-            file << '\t' << tab.view.scrollOffset;
+        file << '\t' << tab.view.scrollOffset;
+        if (tab.pinned || !tab.label.empty()) {
+            file << '\t' << (tab.pinned ? 'p' : '-');
+            if (!tab.label.empty()) file << '\t' << ToUtf8(tab.label);
+        }
         file << '\n';
     }
 }
 
 void RestoreTabs() {
-    // Lines: "<url>" or "<url>\t<scrollOffset>".
-    std::vector<std::pair<std::wstring, size_t>> entries;
+    // Lines: "<url>[\t<scroll>[\t<p|-> [\t<label>]]]".
+    struct PendingTab { std::wstring url; size_t scroll; bool pinned; std::wstring label; };
+    std::vector<PendingTab> entries;
     {
         std::ifstream in(TabsFilePath());
         std::string line;
         while (std::getline(in, line)) {
-            const size_t tab = line.find('\t');
-            std::wstring url = ToWide(
-                tab == std::string::npos ? line : line.substr(0, tab));
-            if (url.empty()) continue;
-            size_t scroll = 0;
-            if (tab != std::string::npos) {
-                try { scroll = std::stoull(line.substr(tab + 1)); }
-                catch (...) { scroll = 0; }
+            std::vector<std::string> f;
+            size_t pos = 0;
+            while (true) {
+                const size_t t = line.find('\t', pos);
+                f.push_back(t == std::string::npos
+                    ? line.substr(pos) : line.substr(pos, t - pos));
+                if (t == std::string::npos) break;
+                pos = t + 1;
             }
-            entries.emplace_back(std::move(url), scroll);
+            if (f.empty() || f[0].empty()) continue;
+            PendingTab e;
+            e.url = ToWide(f[0]);
+            try { e.scroll = f.size() > 1 ? std::stoull(f[1]) : 0; }
+            catch (...) { e.scroll = 0; }
+            e.pinned = f.size() > 2 && f[2] == "p";
+            e.label = f.size() > 3 ? ToWide(f[3]) : L"";
+            entries.push_back(std::move(e));
         }
     }
     if (entries.empty())
         return; // first run: keep the single fresh tab
 
     g_tabs.clear();
-    for (auto& [url, scroll] : entries) {
+    for (auto& e : entries) {
         TabState tab;
-        tab.url = url;
-        tab.view.scrollOffset = scroll;
+        tab.url = e.url;
+        tab.view.scrollOffset = e.scroll;
+        tab.pinned = e.pinned;
+        tab.label = e.label;
         tab.pageOpen = true;
         tab.pendingLoad = true; // loaded lazily on activation
         g_tabs.push_back(std::move(tab));
@@ -3178,3 +3326,302 @@ void ShutdownAsyncLoads() {
         g_loadThread.join();
 }
 
+
+
+// ---------------------------------------------------------------------------
+// Feature pack: offline mode, background-tab search, misc helpers
+// ---------------------------------------------------------------------------
+
+// User-controlled offline mode: requests are answered from cache only.
+bool UiOfflineEnabled() { return g_userOffline; }
+
+void UiSetOffline(bool on) {
+    g_userOffline = on;
+    UiSetSetting(L"offline", on ? L"1" : L"");
+}
+
+void UiApplyOfflineSetting() {
+    g_userOffline = UiGetSetting(L"offline") == L"1";
+}
+
+// Search query opened in a new background tab (omnibox Ctrl+Enter).
+TabViewState UiSearchInBackgroundTab(const std::string& query,
+                                    const TabViewState& view) {
+    if (query.empty()) {
+        g_consoleStatus = L"Пустой поисковый запрос.";
+        return view;
+    }
+    EnsureTabs();
+    if (g_tabs.size() >= MAX_TABS) {
+        g_consoleStatus = L"Слишком много вкладок (максимум " +
+            std::to_wstring(MAX_TABS) + L").";
+        return view;
+    }
+    g_tabs.emplace_back();
+    const size_t newIndex = g_tabs.size() - 1;
+    LoadJob job;
+    job.kind = LoadJob::Kind::Search;
+    job.query = query;
+    job.addToNavigation = true;
+    job.recordVisit = true;
+    job.tabIndex = newIndex;
+    QueueOrStart(job);
+    g_consoleStatus = L"Поиск во вкладке " +
+        std::to_wstring(newIndex + 1) + L".";
+    return view;
+}
+
+// Reload bypassing the cache entirely (hard reload).
+void UiHardReload() {
+    if (g_currentUrl.empty()) {
+        g_consoleStatus = L"Нет страницы для обновления.";
+        return;
+    }
+    if (g_currentUrl.rfind(L"http", 0) != 0) {
+        UiReload(); // internal/custom pages: normal reload path
+        return;
+    }
+    EnsureTabs();
+    LoadJob job;
+    job.kind = LoadJob::Kind::Url;
+    job.url = g_currentUrl;
+    job.mode = CacheMode::Bypass;
+    job.addToNavigation = false;
+    job.recordVisit = false;
+    job.tabIndex = g_activeTab;
+    QueueOrStart(job);
+    g_consoleStatus = L"Жёсткое обновление (мимо кэша)…";
+}
+
+// View-source of an arbitrary URL (synchronous — one fetch, UI waits).
+void UiViewSourceUrl(const std::wstring& rawUrl) {
+    const std::wstring url = NormalizeUrl(rawUrl);
+    if (url.empty() || url.rfind(L"http", 0) != 0) {
+        g_consoleStatus = L"Укажите http(s)-адрес: source <url>.";
+        return;
+    }
+    g_consoleStatus = L"Загрузка исходного кода…";
+    FetchOutcome o = FetchPage(url, CacheMode::Use, nullptr);
+    if (!o.ok) {
+        g_consoleStatus = o.error.empty()
+            ? L"Не удалось загрузить страницу." : o.error;
+        return;
+    }
+    const std::string src = o.html.empty() ? o.text : o.html;
+    CommitCustomPage(L"view-source://" + o.finalUrl,
+                     "View-source: " + o.title, src, {});
+    g_currentHtml = src;
+    g_consoleStatus = L"Исходный код: " + o.finalUrl;
+}
+
+// Dedicated images page — every page image as a clickable link.
+void UiImagesPage() {
+    if (g_currentImages.empty()) {
+        g_consoleStatus = L"На странице нет изображений.";
+        return;
+    }
+    std::string text;
+    std::vector<Link> links;
+    text += "Изображения страницы — " +
+            std::to_string(g_currentImages.size()) + " шт.\n";
+    text += " Enter/click — открыть, d — скачать.\n\n";
+    for (size_t i = 0; i < g_currentImages.size(); ++i) {
+        const PageImage& img = g_currentImages[i];
+        std::wstring label = ToWide(img.alt);
+        if (label.empty()) {
+            const size_t slash = img.url.find_last_of(L"/");
+            label = slash == std::wstring::npos
+                ? img.url : img.url.substr(slash + 1);
+            if (label.empty()) label = img.url;
+        }
+        text += std::to_string(i + 1) + ". " + ToUtf8(label) + "\n   " +
+                ToUtf8(img.url) + "\n";
+        links.push_back({ToUtf8(label), img.url});
+    }
+    CommitCustomPage(L"images://page", "Изображения страницы",
+                     NormalizeDisplayText(text), std::move(links));
+    g_consoleStatus = L"Изображений на странице: " +
+        std::to_wstring(g_currentImages.size()) + L".";
+}
+
+// Dedicated links page — the full link list (the `links` command only
+// copies URLs to the clipboard).
+void UiLinksPage() {
+    if (g_currentLinks.empty()) {
+        g_consoleStatus = L"На странице нет ссылок.";
+        return;
+    }
+    std::string text;
+    std::vector<Link> links;
+    text += "Ссылки страницы — " +
+            std::to_string(g_currentLinks.size()) + " шт.\n\n";
+    for (size_t i = 0; i < g_currentLinks.size(); ++i) {
+        const Link& l = g_currentLinks[i];
+        text += std::to_string(i + 1) + ". " + l.label + "\n   " +
+                ToUtf8(l.url) + "\n";
+        links.push_back({std::to_string(i + 1) + ". " + l.label, l.url});
+    }
+    CommitCustomPage(L"links://page", "Ссылки страницы",
+                     NormalizeDisplayText(text), std::move(links));
+    g_consoleStatus = L"Ссылок на странице: " +
+        std::to_wstring(g_currentLinks.size()) + L".";
+}
+
+// --- notes management -----------------------------------------------------
+
+void UiNoteDelete(size_t index1) {
+    std::wifstream in(NotesFilePath());
+    std::vector<std::wstring> lines;
+    std::wstring line;
+    while (std::getline(in, line)) lines.push_back(line);
+    if (lines.empty()) {
+        g_consoleStatus = L"Заметок нет.";
+        return;
+    }
+    if (index1 < 1 || index1 > lines.size()) {
+        g_consoleStatus = L"Нет заметки №" + std::to_wstring(index1) +
+            L" (всего " + std::to_wstring(lines.size()) + L").";
+        return;
+    }
+    lines.erase(lines.begin() + static_cast<long>(index1 - 1));
+    std::wofstream out(NotesFilePath(), std::ios::trunc);
+    for (const auto& l : lines) out << l << L'\n';
+    g_consoleStatus = L"Заметка удалена (осталось " +
+        std::to_wstring(lines.size()) + L").";
+}
+
+void UiNotesClear() {
+    std::wofstream out(NotesFilePath(), std::ios::trunc);
+    g_consoleStatus = L"Все заметки удалены.";
+}
+
+// --- lucky ----------------------------------------------------------------
+
+void UiLucky() {
+    // Half the time: random Wikipedia article; otherwise a random bookmark.
+    const auto bookmarks = LoadBookmarks();
+    if (!bookmarks.empty() && (std::rand() % 2 == 0)) {
+        const auto& url =
+            bookmarks[static_cast<size_t>(std::rand()) % bookmarks.size()];
+        UiOpenUrl(url);
+        g_consoleStatus = L"Мне повезёт! (закладка)";
+    } else {
+        UiOpenUrl(L"https://ru.wikipedia.org/wiki/Special:Random");
+        g_consoleStatus = L"Мне повезёт! (Википедия)";
+    }
+}
+
+// --- sessions ---------------------------------------------------------------
+
+// List saved/session-*.txt files as a clickable internal page.
+void UiSessionsPage() {
+    std::vector<fs::path> files;
+    std::error_code ec;
+    const fs::path dir = SavedDirPath();
+    if (fs::exists(dir, ec)) {
+        for (const auto& e : fs::directory_iterator(dir, ec)) {
+            const std::wstring n = e.path().filename().wstring();
+            if (n.rfind(L"session-", 0) == 0 &&
+                e.path().extension() == L".txt")
+                files.push_back(e.path());
+        }
+    }
+    std::sort(files.begin(), files.end());
+    std::string text;
+    std::vector<Link> links;
+    text += "Сохранённые сессии — " + std::to_string(files.size()) +
+            " шт.\n";
+    text += " restore <имя> — открыть вкладки из файла.\n\n";
+    for (size_t i = 0; i < files.size(); ++i) {
+        const std::wstring name = files[i].filename().wstring();
+        uint64_t sz = 0;
+        {
+            std::error_code ec2;
+            sz = fs::file_size(files[i], ec2);
+        }
+        text += std::to_string(i + 1) + ". " + ToUtf8(name) +
+                "  —  " + std::to_string(sz) + " байт\n";
+        links.push_back({std::to_string(i + 1) + ". " + ToUtf8(name),
+                         L"restore://" + name});
+    }
+    if (files.empty())
+        text += "Сессий нет — выполните session для экспорта.\n";
+    CommitCustomPage(L"sessions://page", "Сессии", text, std::move(links));
+    g_consoleStatus = L"Сохранённых сессий: " +
+        std::to_wstring(files.size()) + L".";
+}
+
+// Restore tabs from a saved/session-*.txt export ([TABS] section).
+void UiRestoreSession(const std::wstring& name) {
+    std::wstring file = name;
+    if (file.rfind(L"session-", 0) != 0) file = L"session-" + file;
+    if (file.size() < 4 || file.substr(file.size() - 4) != L".txt")
+        file += L".txt";
+    const fs::path path = SavedDirPath() / file;
+    std::wifstream in(path);
+    if (!in) {
+        g_consoleStatus = L"Файл сессии не найден: " + file;
+        return;
+    }
+    std::vector<std::wstring> urls;
+    bool inTabs = false;
+    std::wstring line;
+    while (std::getline(in, line)) {
+        if (!line.empty() && line.front() == L'[') {
+            inTabs = line == L"[TABS]";
+            continue;
+        }
+        if (inTabs && !line.empty() && line.front() != L'#')
+            urls.push_back(line);
+    }
+    if (urls.empty()) {
+        g_consoleStatus = L"В сессии нет сохранённых вкладок.";
+        return;
+    }
+    // First URL replaces the current tab, the rest open in background.
+    UiOpenUrl(urls.front());
+    for (size_t i = 1; i < urls.size(); ++i)
+        UiOpenInBackgroundTab(urls[i], TabViewState{});
+    g_consoleStatus = L"Восстановлено вкладок: " +
+        std::to_wstring(urls.size()) + L" (" + file + L").";
+}
+
+// --- display toggles (images section, status bar, prefetch) ---------------
+
+bool UiImagesEnabled() { return g_showImages; }
+void UiSetImagesEnabled(bool on) {
+    g_showImages = on;
+    UiSetSetting(L"images", on ? L"" : L"0");
+}
+void UiApplyImagesSetting() { g_showImages = UiGetSetting(L"images") != L"0"; }
+
+bool UiStatusBarOn() { return g_statusBar; }
+void UiSetStatusBar(bool on) {
+    g_statusBar = on;
+    UiSetSetting(L"statusbar", on ? L"" : L"0");
+}
+void UiApplyStatusBarSetting() { g_statusBar = UiGetSetting(L"statusbar") != L"0"; }
+
+bool UiPrefetchEnabled() { return g_prefetch; }
+void UiSetPrefetch(bool on) {
+    g_prefetch = on;
+    UiSetSetting(L"prefetch", on ? L"" : L"0");
+}
+void UiApplyPrefetchSetting() { g_prefetch = UiGetSetting(L"prefetch") != L"0"; }
+
+// --- text zoom (wrap width) ------------------------------------------------
+
+int UiZoomPercent() { return g_zoomPercent; }
+
+void UiSetZoomPercent(int percent) {
+    g_zoomPercent = std::clamp(percent, 50, 200);
+    UiSetSetting(L"zoom", g_zoomPercent == 100
+        ? L"" : std::to_wstring(g_zoomPercent));
+}
+
+void UiApplyZoomSetting() {
+    const std::wstring v = UiGetSetting(L"zoom");
+    if (v.empty()) { g_zoomPercent = 100; return; }
+    try { UiSetZoomPercent(std::stoi(ToUtf8(v))); }
+    catch (...) { g_zoomPercent = 100; }
+}

@@ -52,7 +52,15 @@ add_library(browser_core STATIC
     src/downloads.cpp
     src/sync.cpp
     src/app.cpp
-    src/console_ui.cpp
+    src/ui_theme.cpp
+    src/ui_primitives.cpp
+    src/ui_select.cpp
+    src/ui_render.cpp
+    src/ui_actions.cpp
+    src/ui_commands.cpp
+    src/ui_input.cpp
+    src/ui_mouse.cpp
+    src/ui_main.cpp
     src/wvhost.cpp
 )
 

@@ -95,7 +95,7 @@ wait 1500
 
 # --- downloads page ---
 key ctrl+j
-wait 1500
+wait 6000
 dump build/Release/dl_page.txt
 expect Загрузк
 key alt+left
@@ -160,18 +160,190 @@ expect Браузер
 key alt+left
 wait 1500
 
-# --- double-click selects a word on the page (row 8 = heading area) ---
-dblclick 12 8
+# --- double-click selects a word on the page ("domain" at row 6, col ~11) ---
+key ctrl+l
+wait 300
+text https://example.com
+wait 200
+key enter
+wait 4000
+expect This domain
+dblclick 11 6
 wait 400
 key ctrl+c
 wait 300
-expectclip Exa
+expectclip domain
 
 # --- single click on empty area does NOT select/navigate ---
 down 5 20
 up 5 20
 wait 300
 expect Example Domain
+# --- feature pack smoke tests (all local, no extra navigation) ---
+key ctrl+l
+wait 300
+text tabname ТестВкладка
+wait 200
+key enter
+wait 800
+expect ТестВкладка
+key ctrl+l
+wait 300
+text pin
+wait 200
+key enter
+wait 500
+expect закреплена
+key ctrl+l
+wait 300
+text unpin
+wait 200
+key enter
+wait 500
+expect откреплена
+key ctrl+l
+wait 300
+text tabname
+wait 200
+key enter
+wait 600
+expect Example Domain
+key ctrl+l
+wait 300
+text zoom 150
+wait 200
+key enter
+wait 400
+expect 150%
+key ctrl+l
+wait 300
+text zoom reset
+wait 200
+key enter
+wait 400
+expect 100%
+key ctrl+l
+wait 300
+text offline status
+wait 200
+key enter
+wait 400
+expect Офлайн-режим
+key ctrl+l
+wait 300
+text statusbar off
+wait 200
+key enter
+wait 400
+expectnot j/k —
+key ctrl+l
+wait 300
+text statusbar on
+wait 200
+key enter
+wait 400
+expect вкл
+key ctrl+l
+wait 300
+text images off
+wait 200
+key enter
+wait 400
+expect отключены
+key ctrl+l
+wait 300
+text images on
+wait 200
+key enter
+wait 400
+expect включены
+key ctrl+l
+wait 300
+text prefetch off
+wait 200
+key enter
+wait 400
+expect Автоподгрузка
+key ctrl+l
+wait 300
+text prefetch on
+wait 200
+key enter
+wait 400
+expect Автоподгрузка
+key ctrl+l
+wait 300
+text engine
+wait 200
+key enter
+wait 400
+expect Поисковик
+key ctrl+l
+wait 300
+text fullscreen
+wait 200
+key enter
+wait 400
+expect Полный экран
+key ctrl+l
+wait 300
+text fullscreen off
+wait 200
+key enter
+wait 400
+expect выключен
+key ctrl+1
+wait 800
+key ctrl+l
+wait 300
+text copy domain
+wait 200
+key enter
+wait 400
+expectclip example.com
+key ctrl+l
+wait 300
+text example
+wait 200
+key enter
+wait 5000
+expect Example
+key ctrl+l
+wait 300
+text linkpage
+wait 200
+key enter
+wait 1500
+expect Ссылки страницы
+key ctrl+l
+wait 300
+text https://example.com
+wait 200
+key enter
+wait 4000
+key ctrl+l
+wait 300
+text find domain
+wait 200
+key enter
+wait 800
+expect Найдено
+key ctrl+l
+wait 300
+text snapshot
+wait 200
+key enter
+wait 600
+expect Снимок сохранён
+key ctrl+l
+wait 300
+text sessions
+wait 200
+key enter
+wait 1200
+expect Сессии
+key alt+left
+wait 1000
 
 dump build/Release/final_screen.txt
 shot build/Release/final.png
