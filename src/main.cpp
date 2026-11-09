@@ -163,6 +163,11 @@ int wmainImpl() {
             continue;
         }
 
+        if (command == "version" || command == "ver") {
+            std::cout << "Browser " << kAppVersion << " (console, Windows)\n";
+            continue;
+        }
+
         if (command == "downloads") {
             ShowDownloads();
             continue;

@@ -2232,6 +2232,86 @@ void TermRenderPage() {
 
 void UiOpenTerminal() { UiOpenInternalPage(L"terminal"); }
 
+// --- Update check: once a day ask GitHub for the latest release tag ---
+namespace {
+std::mutex g_updateMutex;
+std::wstring g_updateNotice;
+
+std::vector<int> VersionParts(const std::string& v) {
+    std::vector<int> out;
+    std::string cur;
+    for (char c : v) {
+        if (c >= '0' && c <= '9') cur += c;
+        else if (!cur.empty()) {
+            out.push_back(std::atoi(cur.c_str()));
+            cur.clear();
+        }
+    }
+    if (!cur.empty()) out.push_back(std::atoi(cur.c_str()));
+    return out;
+}
+
+bool VersionNewer(const std::string& remote, const std::string& local) {
+    const auto a = VersionParts(remote);
+    const auto b = VersionParts(local);
+    const size_t n = std::max(a.size(), b.size());
+    for (size_t i = 0; i < n; ++i) {
+        const int x = i < a.size() ? a[i] : 0;
+        const int y = i < b.size() ? b[i] : 0;
+        if (x != y) return x > y;
+    }
+    return false;
+}
+} // namespace
+
+void UiScheduleUpdateCheck() {
+    std::thread([] {
+        try {
+            const fs::path stamp = DataDirPath() / L"update_check.txt";
+            uint64_t last = 0;
+            {
+                std::wifstream f(stamp);
+                f >> last;
+            }
+            const uint64_t now = UnixNow();
+            if (last != 0 && now < last + 86400) return;
+            {
+                std::error_code ec;
+                fs::create_directories(DataDirPath(), ec);
+                std::wofstream f(stamp, std::ios::trunc);
+                f << now;
+            }
+            Response r = Request(
+                L"https://api.github.com/repos/fanxcz/browser/releases/latest",
+                CacheMode::Bypass);
+            if (!r.ok || r.status != 200) return;
+            const std::string body(r.body.begin(), r.body.end());
+            const size_t tp = body.find("\"tag_name\"");
+            if (tp == std::string::npos) return;
+            const size_t colon = body.find(':', tp);
+            if (colon == std::string::npos) return;
+            const size_t q1 = body.find('"', colon + 1);
+            if (q1 == std::string::npos) return;
+            const size_t q2 = body.find('"', q1 + 1);
+            if (q2 == std::string::npos) return;
+            std::string tag = body.substr(q1 + 1, q2 - q1 - 1);
+            if (!tag.empty() && tag.front() == 'v') tag.erase(tag.begin());
+            if (tag.empty() || !VersionNewer(tag, kAppVersion)) return;
+            std::lock_guard<std::mutex> lock(g_updateMutex);
+            g_updateNotice =
+                L"Доступна новая версия Browser " + ToWide(tag) +
+                L" — github.com/fanxcz/browser/releases";
+        } catch (...) {}
+    }).detach();
+}
+
+std::wstring UiTakeUpdateNotice() {
+    std::lock_guard<std::mutex> lock(g_updateMutex);
+    std::wstring out = std::move(g_updateNotice);
+    g_updateNotice.clear();
+    return out;
+}
+
 // Runs `cmdLine` in the persistent shell. Returns false when the terminal
 // page isn't open (caller should treat input as a normal query then).
 bool UiTerminalRun(const std::wstring& cmdLine) {

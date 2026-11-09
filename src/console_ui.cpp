@@ -315,6 +315,13 @@ namespace console_ui {
         int selSX = 0, selSY = 0, selEX = 0, selEY = 0;
         bool screenSelValid = false;
         int ssX1 = 0, ssY1 = 0, ssX2 = 0, ssY2 = 0;
+        // Scroll/resize invalidates the screen-selection rectangle — the
+        // rows it pointed at no longer hold the same text.
+        size_t lastScrollOffset = static_cast<size_t>(-1);
+        SHORT lastSelW = -1;
+        SHORT lastSelH = -1;
+        // Omnibox/field undo stack: {text, caret} snapshots before edits.
+        std::vector<std::pair<std::wstring, size_t>> inputUndo;
         // <meta http-equiv="refresh"> auto-reload timer.
         int refreshSeconds = 0;
         int refreshInterval = 0;   // >0: repeating interval (reload N)
@@ -425,6 +432,7 @@ namespace console_ui {
             state.inputViewStart = 0;
             state.focus = Focus::Page;
         }
+        state.inputUndo.clear(); // wholesale replace — fresh edit session
     }
 
     void RefreshSize(State& state) {
@@ -884,6 +892,29 @@ namespace console_ui {
         state.browsingHistory = false;
     }
 
+    // Snapshot the omnibox/field editor before a mutation so Ctrl+Z can
+    // restore it. Capped — long typing sessions don't grow it forever.
+    void PushInputUndo(State& state) {
+        if (state.inputUndo.size() >= 200)
+            state.inputUndo.erase(state.inputUndo.begin());
+        state.inputUndo.push_back({state.input, state.caret});
+    }
+
+    void UndoInput(State& state) {
+        if (state.inputUndo.empty()) {
+            g_consoleStatus = L"Нечего отменять.";
+            return;
+        }
+        const auto [text, caret] = state.inputUndo.back();
+        state.inputUndo.pop_back();
+        state.input = text;
+        state.caret = std::min(caret, text.size());
+        state.inputViewStart = 0;
+        state.browsingHistory = false;
+        state.suggestIndex = -1;
+        ClearInputSel(state);
+    }
+
     // Join the selected page lines into plain text for the clipboard.
     std::wstring SelectedText(const State& state) {
         if (!HasSelection(state)) return {};
@@ -1027,6 +1058,15 @@ namespace console_ui {
 
     void Render(State& state) {
         RefreshSize(state);
+        // Scrolling or resizing moves the text under the selection
+        // rectangle — drop it like a real terminal does on scroll.
+        if (state.scrollOffset != state.lastScrollOffset ||
+            state.width != state.lastSelW || state.height != state.lastSelH) {
+            state.screenSelValid = false;
+            state.lastScrollOffset = state.scrollOffset;
+            state.lastSelW = state.width;
+            state.lastSelH = state.height;
+        }
         Clear(state);
         state.itemRows.clear();
         state.itemPageRows.clear();
@@ -1350,7 +1390,27 @@ namespace console_ui {
                        kSelected, width - 4);
                     At(state, 4, y, line.text, kSelected, width - 8);
                 } else if (line.itemIndex >= 0) {
-                    At(state, 4, y, line.text, color, width - 8);
+                    // Accent-tinted markers: [n] link numbers and the ▣
+                    // image glyph pop against the bright body text.
+                    size_t markLen = 0;
+                    if (!line.text.empty() && line.text.front() == 0x25A3)
+                        markLen = 1;
+                    else if (line.itemIndex <
+                             static_cast<int>(g_currentLinks.size())) {
+                        const size_t close = line.text.find(L']');
+                        if (!line.text.empty() && line.text.front() == L'[' &&
+                            close != std::wstring::npos && close < 8)
+                            markLen = close + 1;
+                    }
+                    if (markLen > 0 && markLen < line.text.size()) {
+                        At(state, 4, y, line.text.substr(0, markLen),
+                           kAccent, static_cast<int>(markLen));
+                        At(state, 4 + static_cast<int>(markLen), y,
+                           line.text.substr(markLen), color,
+                           width - 8 - static_cast<int>(markLen));
+                    } else {
+                        At(state, 4, y, line.text, color, width - 8);
+                    }
                 } else {
                     DrawText(state, 4, y, line.text, color, state.findQuery);
                 }
@@ -1389,12 +1449,22 @@ namespace console_ui {
                 const uint64_t got = g_loadDownloaded.load();
                 const uint64_t total = g_loadTotal.load();
                 const std::wstring prev = status;
-                status = L"Загрузка… " + FormatBytes(got);
+                // ASCII progress bar — visible even before Content-Length
+                // arrives (indeterminate spinner while total is unknown).
                 if (total > 0) {
-                    const int pct = static_cast<int>(got * 100 / total);
-                    status += L" / " + FormatBytes(total) + L" (" +
-                        std::to_wstring(std::min(100, pct)) + L"%)";
+                    const int pct = static_cast<int>(std::min<uint64_t>(100, got * 100 / total));
+                    const int filled = pct * 20 / 100;
+                    status = L"[" + std::wstring(static_cast<size_t>(filled), L'█') +
+                        std::wstring(static_cast<size_t>(20 - filled), L'░') + L"] " +
+                        std::to_wstring(pct) + L"%  ";
+                } else {
+                    status = L"[" + std::wstring(1, L"-\\|/"[
+                        static_cast<int>(Clock::now().time_since_epoch().count() / 200000000) % 4]) +
+                        L"] ";
                 }
+                status += L"Загрузка… " + FormatBytes(got);
+                if (total > 0)
+                    status += L" / " + FormatBytes(total);
                 status += L"   Esc — отмена   " + prev;
             }
             else if (state.editingField >= 0) {
@@ -1587,6 +1657,7 @@ namespace console_ui {
             state.input = ToWide(field.value);
             state.caret = state.input.size();
             state.inputViewStart = 0;
+            state.inputUndo.clear();
             state.findMode = false;
             state.focus = Focus::Search;
             g_consoleStatus = L"Enter — сохранить   Esc — отменить";
@@ -1898,6 +1969,7 @@ namespace console_ui {
         state.caret = 0;
         state.inputViewStart = 0;
         state.browsingHistory = false;
+        state.inputUndo.clear();
 
         // On the terminal page the omnibox is a shell prompt: every line is
         // executed by the persistent cmd.exe session.
@@ -1907,6 +1979,9 @@ namespace console_ui {
                 ActivateAction(state, NavAction::Back);
                 return;
             }
+            // Terminal commands join the omnibox history so Up/Down
+            // recalls them like a real shell prompt.
+            RememberInput(state, value);
             UiTerminalRun(value);
             return;
         }
@@ -1936,6 +2011,7 @@ namespace console_ui {
             state.suggestIndex = -1;
             state.caret = state.input.size();
             state.inputViewStart = 0;
+            state.inputUndo.clear();
             state.browsingHistory = false;
             return;
         }
@@ -2221,6 +2297,7 @@ namespace console_ui {
         if (ctrl && !shift && code == 'L') {
             state.editingField = -1;
             state.input.clear(); state.caret = 0; state.inputViewStart = 0;
+            state.inputUndo.clear();
             state.findMode = false;
             state.focus = Focus::Search; state.browsingHistory = false;
             return;
@@ -2349,6 +2426,7 @@ namespace console_ui {
             state.focus == Focus::Search) { // Shift+Ins = paste
             const std::wstring clip = UiGetClipboardText();
             if (!clip.empty()) {
+                PushInputUndo(state);
                 DeleteInputSel(state);
                 state.input.insert(state.caret, clip);
                 state.caret += clip.size();
@@ -2361,6 +2439,7 @@ namespace console_ui {
             // Paste clipboard text into the omnibox at the caret.
             const std::wstring clip = UiGetClipboardText();
             if (!clip.empty()) {
+                PushInputUndo(state);
                 DeleteInputSel(state); // paste replaces the selection
                 state.input.insert(state.caret, clip);
                 state.caret += clip.size();
@@ -2391,7 +2470,8 @@ namespace console_ui {
             return;
         }
         if (ctrl && code == 'U' && state.focus == Focus::Search) {
-            // Clear the omnibox.
+            // Clear the omnibox (undoable).
+            PushInputUndo(state);
             state.input.clear();
             state.caret = 0;
             state.inputViewStart = 0;
@@ -2399,7 +2479,7 @@ namespace console_ui {
             return;
         }
         if (ctrl && code == VK_BACK && state.focus == Focus::Search) {
-            if (HasInputSel(state)) { DeleteInputSel(state); return; }
+            if (HasInputSel(state)) { PushInputUndo(state); DeleteInputSel(state); return; }
             // Delete the word before the caret.
             size_t p = state.caret;
             while (p > 0 && (state.input[p - 1] == L' ' ||
@@ -2409,6 +2489,7 @@ namespace console_ui {
                    state.input[p - 1] != L'\t')
                 --p;
             if (p < state.caret) {
+                PushInputUndo(state);
                 state.input.erase(p, state.caret - p);
                 state.caret = p;
                 state.suggestIndex = -1;
@@ -2438,6 +2519,7 @@ namespace console_ui {
                 state.input = g_currentUrl;
             state.caret = state.input.size();
             state.inputViewStart = 0;
+            state.inputUndo.clear();
             return;
         }
         if (code == VK_BROWSER_BACK) { ActivateAction(state, NavAction::Back); return; }
@@ -2475,6 +2557,7 @@ namespace console_ui {
         if (ctrl && code == 'Q') { running = false; return; } // quit
         if (ctrl && code == 'X' && state.focus == Focus::Search) {
             // Cut: selection first, else the char before the caret.
+            if (HasInputSel(state) || state.caret > 0) PushInputUndo(state);
             if (HasInputSel(state)) {
                 const auto range = InputSelRange(state);
                 const std::wstring cut =
@@ -2499,8 +2582,15 @@ namespace console_ui {
             state.scrollOffset = 0;
             return;
         }
-        if (ctrl && code == 'Z') { // undo last closed tab
-            ApplyView(state, UiReopenClosedTab(CurrentView(state)));
+        if (ctrl && code == 'Z') {
+            // In the omnibox/field editor Ctrl+Z undoes text edits;
+            // elsewhere it reopens the last closed tab.
+            if (state.focus == Focus::Search || state.editingField >= 0) {
+                if (!state.inputUndo.empty()) UndoInput(state);
+                else ApplyView(state, UiReopenClosedTab(CurrentView(state)));
+            } else {
+                ApplyView(state, UiReopenClosedTab(CurrentView(state)));
+            }
             return;
         }
         if (ctrl && code == 'U' && state.focus == Focus::Page) {
@@ -2519,6 +2609,7 @@ namespace console_ui {
                 state.suggestIndex = -1;
                 state.caret = state.input.size();
                 state.inputViewStart = 0;
+                state.inputUndo.clear();
                 state.browsingHistory = false;
                 return;
             }
@@ -2569,10 +2660,12 @@ namespace console_ui {
                 // Keep findQuery so matches stay highlighted until the next
                 // search or navigation, like in a regular browser.
                 state.focus = Focus::Page;
-            } else if (state.selAnchor >= 0) {
+            } else if (state.selAnchor >= 0 || state.screenSelValid) {
                 // Esc clears an active text selection first.
                 ClearSelection(state);
+                state.screenSelValid = false;
             } else if (!state.input.empty()) {
+                PushInputUndo(state);
                 state.input.clear(); state.caret = 0; state.inputViewStart = 0;
                 state.browsingHistory = false;
             } else if (g_loadRunning.load()) {
@@ -2637,6 +2730,7 @@ namespace console_ui {
                 state.input = state.historyIndex < state.inputHistory.size()
                     ? state.inputHistory[state.historyIndex] : state.historyDraft;
                 state.caret = state.input.size();
+                state.inputUndo.clear();
                 return;
             }
         }
@@ -2853,6 +2947,7 @@ namespace console_ui {
                     state.input = clip;
                     state.caret = clip.size();
                     state.inputViewStart = 0;
+                    state.inputUndo.clear();
                     state.browsingHistory = false;
                     state.suggestIndex = -1;
                     state.focus = Focus::Search;
@@ -3007,12 +3102,13 @@ namespace console_ui {
         if (code == VK_HOME) { state.caret = 0; return; }
         if (code == VK_END) { state.caret = state.input.size(); return; }
         if (code == VK_BACK) {
-            if (HasInputSel(state)) { DeleteInputSel(state); return; }
+            if (HasInputSel(state)) { PushInputUndo(state); DeleteInputSel(state); return; }
             if (state.caret > 0) {
                 size_t eraseAt = state.caret - 1;
                 if (eraseAt > 0 && state.input[eraseAt] >= 0xDC00 && state.input[eraseAt] <= 0xDFFF &&
                     state.input[eraseAt - 1] >= 0xD800 && state.input[eraseAt - 1] <= 0xDBFF)
                     --eraseAt;
+                PushInputUndo(state);
                 state.input.erase(eraseAt, state.caret - eraseAt);
                 state.caret = eraseAt;
             }
@@ -3020,13 +3116,17 @@ namespace console_ui {
             return;
         }
         if (code == VK_DELETE) {
-            if (HasInputSel(state)) { DeleteInputSel(state); return; }
-            if (state.caret < state.input.size()) state.input.erase(state.caret, 1);
+            if (HasInputSel(state)) { PushInputUndo(state); DeleteInputSel(state); return; }
+            if (state.caret < state.input.size()) {
+                PushInputUndo(state);
+                state.input.erase(state.caret, 1);
+            }
             state.browsingHistory = false;
             return;
         }
         const wchar_t ch = key.uChar.UnicodeChar;
         if (!ctrl && !alt && ch >= L' ' && ch != 0) {
+            PushInputUndo(state);
             DeleteInputSel(state); // typing replaces the selection
             state.input.insert(state.caret, 1, ch);
             ++state.caret;
@@ -3209,6 +3309,7 @@ namespace console_ui {
                 state.suggestIndex = -1;
                 state.caret = state.input.size();
                 state.inputViewStart = 0;
+                state.inputUndo.clear();
                 state.browsingHistory = false;
                 state.focus = Focus::Search;
                 return;
@@ -3323,6 +3424,7 @@ namespace console_ui {
             try { MaybeDailyBackup(); EvictCacheOverflow(); }
             catch (...) {}
         }).detach();
+        UiScheduleUpdateCheck();
         state.focus = Focus::Search;
         state.historyIndex = 0;
         bool running = true;
@@ -3335,6 +3437,9 @@ namespace console_ui {
         while (running) {
             // Commit any finished background load and pick up queued jobs.
             const bool loadChanged = PollAsyncLoad();
+            // One-shot notice from the background update check.
+            const std::wstring upd = UiTakeUpdateNotice();
+            if (!upd.empty()) g_consoleStatus = upd;
             // Periodic re-render animates the "loading" indicator.
             bool animTick = false;
             if (g_loadRunning.load() &&
