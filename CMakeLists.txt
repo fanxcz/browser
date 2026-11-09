@@ -100,6 +100,16 @@ endif()
 set_target_properties(Browser PROPERTIES OUTPUT_NAME "Browser")
 
 # ---------------------------------------------------------------------------
+# Console test harness — attaches to Browser.exe, injects input, reads screen
+# ---------------------------------------------------------------------------
+add_executable(browser_harness tools/harness.cpp)
+target_compile_definitions(browser_harness PRIVATE
+    WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+if(MSVC)
+    target_compile_options(browser_harness PRIVATE /W3 /EHsc /utf-8)
+endif()
+
+# ---------------------------------------------------------------------------
 # Unit tests (pure functions: encoding, URL, charset, HTML parsing, cache)
 # ---------------------------------------------------------------------------
 option(BROWSER_BUILD_TESTS "Build browser unit tests" ON)

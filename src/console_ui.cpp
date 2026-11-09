@@ -2163,7 +2163,8 @@ namespace console_ui {
         if (lower == L"bookmarks-clear") { UiClearBookmarks(); return; }
         if (lower == L"cache-clear") { UiClearCache(); return; }
         if (lower == L"help") {
-            g_consoleStatus = L"Запрос или адрес + Enter. Команды: back, forward, reload, home, history, bookmarks, downloads, download <url> [имя], edge <url>, web [url|back|find <т>], ai [@] <вопрос>, ai sum, stop, bookmark add, stats, tabs, dup, reopen, copy, source, info, reader, md, backup, session, clear-history, clear-history-older <дн>, export, import <файл>, bookmarks-clear, cache-clear, terminal — консоль Windows, exit. Клавиши на странице: j/k, Enter, o, /, b/f, g/G, u — исходник, i — инфо, h — история, n/w — вкладки, ,/. — навигация, s — сохранить (Shift+S — markdown), a — закладка, e — внешний браузер, v — вставить, c — копировать ссылку, z/Ctrl+Shift+C — текст страницы, V — выделение мышью/клавиатами + y — копировать, F3 — следующее совпадение, ? — справка.";
+            UiOpenInternalPage(L"help");
+            state.focus = Focus::Page;
             return;
         }
         if (lower == L"stats") { UiShowStats(); return; }

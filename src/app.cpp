@@ -1277,6 +1277,13 @@ void LoadWorker(LoadJob job) {
                 result.ok = false;
                 result.statusText = L"Ответ ИИ больше не доступен.";
             }
+        } else if (job.url == std::wstring(kInternalPrefix) + L"help") {
+            result.outcome.ok = true;
+            result.outcome.finalUrl = job.url;
+            result.outcome.title = "Справка";
+            result.outcome.text = HelpPageText();
+            result.ok = true;
+            result.statusText = L"Справка по командам и клавишам.";
         } else if (job.url == std::wstring(kInternalPrefix) + L"terminal") {
             result.outcome.ok = true;
             result.outcome.finalUrl = job.url;
@@ -2230,6 +2237,58 @@ void TermRenderPage() {
     g_currentHtml.clear();
 }
 
+// browser://help page body — commands and keys of the console UI.
+std::string HelpPageText() {
+    return
+        "Справка — команды адресной строки и клавиши страницы.\n"
+        "\n"
+        "■ НАВИГАЦИЯ\n"
+        "  back / forward / reload / home — история и перезагрузка\n"
+        "  reload <сек> — автообновление страницы\n"
+        "  history / bookmarks / downloads — внутренние страницы\n"
+        "  download <url> [имя] — скачать файл\n"
+        "  edge <url> — страница через headless Edge (JS)\n"
+        "  web [url] — открыть в WebView2-окне\n"
+        "  stop — отменить загрузку\n"
+        "\n"
+        "■ ПОИСК И ТЕКСТ\n"
+        "  Любое слово без http → поиск в DuckDuckGo.\n"
+        "  / или Ctrl+F — найти на странице, F3 — следующее.\n"
+        "  ai <вопрос> — ИИ (Pollinations, без ключа).\n"
+        "  ai @ <вопрос> — ИИ с учётом текста страницы.\n"
+        "  ai sum — краткий пересказ страницы.\n"
+        "\n"
+        "■ ВЫДЕЛЕНИЕ И БУФЕР\n"
+        "  Мышью: тянуть по любому тексту → Ctrl+C копирует.\n"
+        "  V — выделение клавиатурой (j/k, g/G, y — копировать).\n"
+        "  z / Ctrl+Shift+C — весь текст страницы.\n"
+        "  c — ссылка под курсором, y — адрес страницы.\n"
+        "  Ctrl+A/C/X/V/Z — выделить/копировать/вырезать/вставить/undo.\n"
+        "\n"
+        "■ ВКЛАДКИ И ФАЙЛЫ\n"
+        "  Ctrl+T/W — новая/закрыть, Ctrl+Tab — следующая,\n"
+        "  Ctrl+1..9 — вкладка по номеру, Ctrl+Shift+T — вернуть.\n"
+        "  dup / reopen — дублировать/переоткрыть вкладку.\n"
+        "  s — сохранить HTML, Shift+S — Markdown.\n"
+        "  Ctrl+D — закладка, Ctrl+S — сохранить, Ctrl+Y — история.\n"
+        "\n"
+        "■ ТЕРМИНАЛ И СИСТЕМА\n"
+        "  terminal — встроенный cmd.exe (browser://terminal).\n"
+        "  Ctrl+` — полноценный интерактивный cmd.exe.\n"
+        "  stats — статистика сети и кэша.\n"
+        "  backup / session — бэкап и экспорт сессии.\n"
+        "  clear-history, clear-history-older <дн>, cache-clear.\n"
+        "\n"
+        "■ КЛАВИШИ НА СТРАНИЦЕ\n"
+        "  j/k, Enter — ссылка, o — адрес, ,/. — назад/вперёд,\n"
+        "  b/f — история/вперёд по ссылкам, g/G — края,\n"
+        "  u — исходник, i — инфо, r — обновить, ? — эта справка.\n"
+        "  Пробел/PgUp/PgDn — листать, Home/End — края.\n"
+        "  Ctrl+Home/End — в начало/конец, Ctrl+PgUp/PgDn — блоки.\n"
+        "  Колесо мыши — прокрутка, Esc — сброс выделения/отмена.\n"
+        "  Ctrl+Q — выход.\n";
+}
+
 void UiOpenTerminal() { UiOpenInternalPage(L"terminal"); }
 
 // --- Update check: once a day ask GitHub for the latest release tag ---
@@ -2338,6 +2397,7 @@ void UiOpenInternalPage(const std::wstring& kind) {
     job.mode = CacheMode::Bypass;
     job.addToNavigation = true;
     job.recordVisit = false; // internal pages don't belong in history
+    job.tabIndex = g_activeTab;
     QueueOrStart(job);
 }
 

@@ -1,0 +1,150 @@
+# Full mechanics test — drives the live Browser.exe like a user.
+attachname Browser.exe
+wait 800
+size
+
+# --- unwind to a normal page first (terminal/internal pages swallow
+#     omnibox input — "home" there would run as a shell command) ---
+key alt+left
+wait 800
+key alt+left
+wait 800
+key alt+left
+wait 800
+key ctrl+l
+wait 300
+text home
+wait 200
+key enter
+wait 2000
+expect Введите запрос
+
+# --- omnibox navigation ---
+key ctrl+l
+wait 300
+text https://example.com
+wait 200
+key enter
+wait 6000
+expect Example Domain
+expect This domain
+
+# --- mouse drag selection + Ctrl+C ---
+down 5 8
+move 40 8
+move 60 8
+up 60 8
+wait 400
+key ctrl+c
+wait 300
+expectclip Example
+
+# --- copy page URL with y ---
+key y
+wait 300
+expectclip example.com
+
+# --- back/forward ---
+key alt+left
+wait 1500
+key alt+right
+wait 5000
+expect Example Domain
+
+# --- scroll wheel ---
+wheel 100 20 -3
+wait 400
+wheel 100 20 3
+wait 400
+
+# --- reader mode toggle ---
+key m
+wait 800
+key m
+wait 800
+
+# --- undo in omnibox ---
+key ctrl+l
+wait 300
+text zzzundo
+wait 300
+expect zzzundo
+key ctrl+z
+wait 300
+expectnot zzzundo
+key ctrl+u
+wait 200
+
+# --- tabs: new tab shows home ---
+key ctrl+t
+wait 1500
+expect Введите запрос
+key ctrl+w
+wait 1000
+expect Example Domain
+
+# --- internal pages ---
+key ctrl+h
+wait 1500
+expect История
+key ctrl+b
+wait 1500
+expect Закладк
+key alt+left
+wait 1500
+
+# --- downloads page ---
+key ctrl+j
+wait 1500
+dump build/Release/dl_page.txt
+expect Загрузк
+key alt+left
+wait 1500
+
+# --- terminal page ---
+key ctrl+l
+wait 300
+text terminal
+wait 300
+key enter
+wait 3000
+dump build/Release/term1.txt
+expect cmd.exe
+key ctrl+l
+wait 300
+text ver
+wait 200
+key enter
+wait 4000
+dump build/Release/term2.txt
+expect Microsoft
+# leave via back (NOT "exit" — that quits the whole app)
+key alt+left
+wait 2000
+
+# --- help command ---
+key ctrl+l
+wait 300
+text help
+wait 300
+key enter
+wait 2500
+dump build/Release/help_page.txt
+expect Справка
+expect НАВИГАЦИЯ
+key alt+left
+wait 1500
+
+# --- settings menu via mouse (gear button: row 1, right side) ---
+size
+down 110 1
+up 110 1
+wait 600
+dump build/Release/after_menu.txt
+expect Переключить тему
+key esc
+wait 300
+
+dump build/Release/final_screen.txt
+shot build/Release/final.png
+echo DONE
