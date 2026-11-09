@@ -3,7 +3,7 @@
 # 🌐 Browser
 
 **Консольный браузер для Windows** — полноценный веб прямо в терминале.
-Без GUI. Без WebView2. Один `Browser.exe` (~2.5 МБ).
+Без GUI. Без WebView2. Один `Browser.exe` (~2.9 МБ).
 
 [![Release](https://img.shields.io/github/v/release/fanxcz/browser?label=release)](https://github.com/fanxcz/browser/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D4?logo=windows)]()
@@ -83,7 +83,7 @@ Browser — браузер, который живёт **внутри консо�
 
 ## Быстрый старт
 
-1. Скачайте `Browser-*.exe` из [Releases](../../releases) — один файл, ~2.5 МБ.
+1. Скачайте `Browser-*.exe` из [Releases](../../releases) — один файл, ~2.9 МБ.
 2. Запустите в любом терминале Windows (Windows Terminal, PowerShell, cmd).
 3. Введите адрес (`wikipedia.org`) или запрос (`погода москва`) → `Enter`.
 
@@ -105,7 +105,24 @@ Browser — браузер, который живёт **внутри консо�
 
 ## Разработка
 
-Исходники пока не публикуются. Проверено: MSVC + CMake 3.24+, C++20, ~170 автотестов.
+Исходники — в этом репозитории (ветка `main`, папки `src/`, `tools/`, `tests/`).
+Готовый exe — в [Releases](../../releases) и в корне репозитория.
+
+**Сборка** (Windows, MSVC + CMake 3.24+, C++20; Lexbor скачается автоматически):
+
+```powershell
+cmake -S . -B build
+cmake --build build --config Release --parallel
+# готовый exe: build/Release/Browser.exe
+```
+
+**Структура:** `src/` — код браузера · `tools/harness.cpp` — тестовый харнесс
+(прикрепляется к живому окну и «нажимает» клавиши/мышь) · `tests/` —
+механики (`mechanics.txt`) и фикстуры · `assets/` — иконка и ресурсы ·
+`index.html` — этот сайт (GitHub Pages).
+
+Проверено: ~180 автотестов (`build/Release/browser_tests.exe`) и 21 живая
+проверка механик через харнесс.
 
 ## Лицензия
 

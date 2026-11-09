@@ -1,0 +1,480 @@
+// storage.cpp — history, bookmarks, export/import, URL suggestions.
+// Split out of app.cpp; shared state lives in browser.h externs.
+
+#include "browser.h"
+
+#include <algorithm>
+#include <cstdio>
+#include <ctime>
+#include <unordered_map>
+#include <unordered_set>
+
+fs::path HistoryFilePath() { return DataDirPath() / L"history.txt"; }
+fs::path BookmarksFilePath() { return DataDirPath() / L"bookmarks.txt"; }
+
+bool IsInternalPageUrl(const std::wstring& url) {
+    return url.rfind(kInternalPrefix, 0) == 0;
+}
+
+namespace {
+
+// history.txt lines may carry a leading "<unixTime>\t" prefix (Browser 4.0+);
+// older plain-URL lines remain readable.
+bool ParseHistoryLine(const std::string& raw, std::wstring& url,
+                      uint64_t& timestamp) {
+    std::string line = Trim(raw);
+    if (line.empty()) return false;
+    timestamp = 0;
+    const size_t tab = line.find('\t');
+    if (tab != std::string::npos && tab > 0) {
+        bool digits = true;
+        for (size_t i = 0; i < tab; ++i)
+            if (!std::isdigit(static_cast<unsigned char>(line[i]))) {
+                digits = false;
+                break;
+            }
+        if (digits) {
+            timestamp = std::strtoull(line.substr(0, tab).c_str(), nullptr, 10);
+            line = Trim(line.substr(tab + 1));
+        }
+    }
+    url = NormalizeUrl(ToWide(line));
+    return !url.empty();
+}
+
+std::vector<std::wstring> ReadUrlFile(const fs::path& path) {
+    std::vector<std::wstring> result;
+    std::ifstream file(path);
+    std::string line;
+    while (std::getline(file, line)) {
+        std::wstring url;
+        uint64_t ts = 0;
+        if (ParseHistoryLine(line, url, ts))
+            result.push_back(url);
+    }
+    return result;
+}
+
+// File order preserved (oldest first); timestamps may be 0 for old entries.
+
+// "только что" / "5 мин. назад" / "3 ч. назад" / "2 дн. назад" / "12.03.2025"
+
+struct CachedUrlFile {
+    fs::file_time_type mtime{};
+    bool valid = false;
+    std::vector<std::wstring> urls;
+};
+
+void RefreshUrlCache(CachedUrlFile& cache, const fs::path& path) {
+    std::error_code ec;
+    const bool exists = fs::exists(path, ec);
+    const fs::file_time_type mtime =
+        exists ? fs::last_write_time(path, ec) : fs::file_time_type{};
+    if (cache.valid && mtime == cache.mtime && !ec)
+        return;
+    cache.urls = ReadUrlFile(path);
+    cache.mtime = mtime;
+    cache.valid = true;
+}
+
+} // namespace
+
+std::vector<HistoryEntry> ReadHistoryEntries(const fs::path& path) {
+    std::vector<HistoryEntry> result;
+    std::ifstream file(path);
+    std::string line;
+    while (std::getline(file, line)) {
+        HistoryEntry entry;
+        if (ParseHistoryLine(line, entry.url, entry.timestamp))
+            result.push_back(std::move(entry));
+    }
+    return result;
+}
+
+std::string FormatVisitTime(uint64_t timestamp) {
+    if (timestamp == 0) return {};
+    const uint64_t now = UnixNow();
+    if (now <= timestamp) return "только что";
+    const uint64_t diff = now - timestamp;
+    const uint64_t minutes = diff / 60;
+    const uint64_t hours = diff / 3600;
+    const uint64_t days = diff / 86400;
+    char buf[64];
+    if (minutes < 1) return "только что";
+    if (minutes < 60) {
+        std::snprintf(buf, sizeof(buf), "%llu мин. назад",
+                      static_cast<unsigned long long>(minutes));
+        return buf;
+    }
+    if (hours < 24) {
+        std::snprintf(buf, sizeof(buf), "%llu ч. назад",
+                      static_cast<unsigned long long>(hours));
+        return buf;
+    }
+    if (days < 7) {
+        std::snprintf(buf, sizeof(buf), "%llu дн. назад",
+                      static_cast<unsigned long long>(days));
+        return buf;
+    }
+    const std::time_t t = static_cast<std::time_t>(timestamp);
+    std::tm tm{};
+    localtime_s(&tm, &t);
+    std::snprintf(buf, sizeof(buf), "%02d.%02d.%04d",
+                  tm.tm_mday, tm.tm_mon + 1, tm.tm_year + 1900);
+    return buf;
+}
+
+void AppendHistory(const std::wstring& url) {
+    // Skip duplicates: check the tail of the file plus an in-memory set that
+    // is seeded once from the existing history.
+    static std::unordered_set<std::wstring> seen;
+    static bool seenInit = false;
+    if (!seenInit) {
+        seenInit = true;
+        for (const auto& entry : ReadUrlFile(HistoryFilePath()))
+            seen.insert(entry);
+    }
+    if (!seen.insert(url).second)
+        return;
+
+    std::error_code ec;
+    const uintmax_t size = fs::exists(HistoryFilePath(), ec) ? fs::file_size(HistoryFilePath(), ec) : 0;
+
+    // Compact the file once it grows past a reasonable size.
+    if (!ec && size > 128 * 1024) {
+        auto entries = ReadHistoryEntries(HistoryFilePath());
+        const size_t keep = std::min<size_t>(entries.size(), MAX_HISTORY_ENTRIES);
+        entries.erase(entries.begin(), entries.end() - static_cast<long>(keep));
+        std::ofstream rewrite(HistoryFilePath(), std::ios::trunc);
+        for (const auto& entry : entries) {
+            if (entry.timestamp)
+                rewrite << entry.timestamp << '\t';
+            rewrite << ToUtf8(entry.url) << '\n';
+        }
+        return;
+    }
+
+    std::ofstream file(HistoryFilePath(), std::ios::app);
+    if (file)
+        file << UnixNow() << '\t' << ToUtf8(url) << '\n';
+}
+
+void LoadHistory() {
+    g_navigation = ReadUrlFile(HistoryFilePath());
+    // Keep only the tail of the history as the navigation stack.
+    if (g_navigation.size() > MAX_HISTORY_ENTRIES) {
+        g_navigation.erase(g_navigation.begin(),
+                           g_navigation.end() - static_cast<long>(MAX_HISTORY_ENTRIES));
+    }
+    if (!g_navigation.empty()) {
+        g_hasNavigation = true;
+        g_navigationIndex = g_navigation.size() - 1;
+    }
+}
+
+void ShowHistory() {
+    auto entries = ReadHistoryEntries(HistoryFilePath());
+    std::cout << "\n--- HISTORY ---\n";
+    if (entries.empty()) {
+        std::cout << "(empty)\n";
+        return;
+    }
+    for (size_t i = entries.size(); i-- > 0;) {
+        std::cout << ToUtf8(entries[i].url);
+        const std::string when = FormatVisitTime(entries[i].timestamp);
+        if (!when.empty())
+            std::cout << "  (" << when << ")";
+        std::cout << '\n';
+    }
+}
+
+void ClearHistory() {
+    std::ofstream file(HistoryFilePath(), std::ios::trunc);
+    g_navigation.clear();
+    g_navigationIndex = 0;
+    g_hasNavigation = false;
+    if (g_consoleUiMode) g_consoleStatus = L"История очищена.";
+    else std::cout << "History cleared.\n";
+}
+
+// Drop history entries older than `days` days (legacy 0-timestamp lines
+// are kept — their age is unknown).
+void ClearHistoryOlderThan(uint64_t days) {
+    const uint64_t cutoff = UnixNow() - days * 86400;
+    auto entries = ReadHistoryEntries(HistoryFilePath());
+    size_t removed = 0;
+    {
+        std::ofstream out(HistoryFilePath(), std::ios::trunc);
+        for (const auto& e : entries) {
+            if (e.timestamp && e.timestamp < cutoff) { ++removed; continue; }
+            if (e.timestamp) out << e.timestamp << '\t';
+            out << ToUtf8(e.url) << '\n';
+        }
+    }
+    const std::string msg = "History: removed " + std::to_string(removed) +
+                            " entries older than " + std::to_string(days) +
+                            " days.";
+    if (g_consoleUiMode)
+        g_consoleStatus = L"История: удалено " + std::to_wstring(removed) +
+                          L" записей старше " + std::to_wstring(days) + L" дн.";
+    else
+        std::cout << msg << '\n';
+}
+
+// Netscape bookmark-file export: bookmarks + recent history.
+void ExportBookmarksHtml() {
+    const fs::path path = SavedDirPath() / L"browser-export.html";
+    std::ofstream out(path, std::ios::trunc);
+    if (!out) {
+        if (g_consoleUiMode) g_consoleStatus = L"Не удалось создать файл экспорта.";
+        else std::cout << "Cannot create export file.\n";
+        return;
+    }
+    out << "<!DOCTYPE NETSCAPE-Bookmark-file-1>\n"
+        << "<META HTTP-EQUIV=\"Content-Type\" CONTENT=\"text/html;"
+        << " charset=UTF-8\">\n<TITLE>Bookmarks</TITLE>\n<H1>Browser</H1>\n"
+        << "<DL><p>\n<H3>Bookmarks</H3>\n<DL><p>\n";
+    for (const auto& url : LoadBookmarks())
+        out << "    <DT><A HREF=\"" << ToUtf8(url) << "\">"
+            << ToUtf8(url) << "</A>\n";
+    out << "</DL><p>\n<H3>History</H3>\n<DL><p>\n";
+    auto entries = ReadHistoryEntries(HistoryFilePath());
+    for (auto it = entries.rbegin(); it != entries.rend(); ++it)
+        out << "    <DT><A HREF=\"" << ToUtf8(it->url) << "\">"
+            << ToUtf8(it->url) << "</A>\n";
+    out << "</DL><p>\n</DL><p>\n";
+    const std::string msg = "Exported to " + ToUtf8(path.wstring());
+    if (g_consoleUiMode) g_consoleStatus = ToWide(msg);
+    else std::cout << msg << '\n';
+}
+
+// Import URLs from a bookmark HTML file into bookmarks (deduped).
+size_t ImportBookmarksHtml(const std::wstring& path) {
+    std::wifstream in(path);
+    if (!in) {
+        if (g_consoleUiMode) g_consoleStatus = L"Не удалось открыть файл импорта.";
+        else std::cout << "Cannot open import file.\n";
+        return 0;
+    }
+    std::wstring content((std::istreambuf_iterator<wchar_t>(in)),
+                         std::istreambuf_iterator<wchar_t>());
+    auto bookmarks = LoadBookmarks();
+    std::unordered_set<std::wstring> have(bookmarks.begin(), bookmarks.end());
+    size_t added = 0;
+    // Pull every http(s) URL out of href="..." attributes and bare text.
+    size_t pos = 0;
+    while ((pos = content.find(L"http", pos)) != std::wstring::npos) {
+        size_t end = pos;
+        while (end < content.size() &&
+               (std::iswalnum(content[end]) ||
+                content[end] == L':' || content[end] == L'/' ||
+                content[end] == L'.' || content[end] == L'-' ||
+                content[end] == L'_' || content[end] == L'~' ||
+                content[end] == L'%' || content[end] == L'?' ||
+                content[end] == L'&' || content[end] == L'=' ||
+                content[end] == L'+' || content[end] == L'#'))
+            ++end;
+        const std::wstring url = NormalizeUrl(content.substr(pos, end - pos));
+        if (!url.empty() && have.insert(url).second) {
+            bookmarks.push_back(url);
+            ++added;
+        }
+        pos = end;
+    }
+    if (added > 0) {
+        std::wofstream out(BookmarksFilePath(), std::ios::trunc);
+        for (const auto& b : bookmarks) out << b << L'\n';
+    }
+    const std::string msg = "Imported " + std::to_string(added) +
+                            " new bookmarks.";
+    if (g_consoleUiMode)
+        g_consoleStatus = L"Импортировано закладок: " +
+                          std::to_wstring(added) + L".";
+    else
+        std::cout << msg << '\n';
+    return added;
+}
+
+std::vector<std::wstring> LoadBookmarks() {
+    return ReadUrlFile(BookmarksFilePath());
+}
+
+// Omnibox/terminal command history — persisted so terminal commands and
+// URL recalls survive restarts (data/commands.txt, one per line, UTF-8).
+namespace {
+fs::path CommandsFilePath() { return DataDirPath() / L"commands.txt"; }
+}
+
+std::vector<std::wstring> LoadInputHistory() {
+    return ReadUrlFile(CommandsFilePath());
+}
+
+void SaveInputHistory(const std::vector<std::wstring>& items) {
+    std::ofstream file(CommandsFilePath(), std::ios::trunc);
+    if (!file) return;
+    for (const auto& item : items)
+        file << ToUtf8(item) << '\n';
+}
+
+void ShowBookmarks() {
+    const auto bookmarks = LoadBookmarks();
+    std::cout << "\n--- BOOKMARKS ---\n";
+    if (bookmarks.empty()) {
+        std::cout << "(empty)\n";
+        return;
+    }
+    for (size_t i = 0; i < bookmarks.size(); ++i)
+        std::cout << '[' << i + 1 << "] " << ToUtf8(bookmarks[i]) << '\n';
+}
+
+void ClearBookmarks() {
+    std::ofstream file(BookmarksFilePath(), std::ios::trunc);
+    if (g_consoleUiMode) g_consoleStatus = L"Закладки очищены.";
+    else std::cout << "Bookmarks cleared.\n";
+}
+
+void AddBookmark() {
+    if (g_currentUrl.empty() || IsInternalPageUrl(g_currentUrl)) {
+        if (g_consoleUiMode) {
+            g_consoleStatus = L"Сначала откройте страницу, которую хотите сохранить.";
+        } else {
+            std::cout << "Open a page first.\n";
+        }
+        return;
+    }
+
+    auto bookmarks = LoadBookmarks();
+    if (std::find(bookmarks.begin(), bookmarks.end(), g_currentUrl) != bookmarks.end()) {
+        if (g_consoleUiMode) g_consoleStatus = L"Эта страница уже в закладках.";
+        else std::cout << "This page is already bookmarked.\n";
+        return;
+    }
+
+    std::ofstream file(BookmarksFilePath(), std::ios::app);
+    if (!file) {
+        if (g_consoleUiMode) g_consoleStatus = L"Не удалось сохранить закладку.";
+        else std::cout << "Cannot write bookmarks file.\n";
+        return;
+    }
+
+    file << ToUtf8(g_currentUrl) << '\n';
+    if (g_consoleUiMode) g_consoleStatus = L"Страница добавлена в закладки.";
+    else std::cout << "Bookmark saved.\n";
+}
+
+std::vector<std::wstring> GetBookmarksCached() {
+    static CachedUrlFile cache;
+    RefreshUrlCache(cache, BookmarksFilePath());
+    return cache.urls;
+}
+
+// Host part of an http(s) URL without scheme, credentials, port or path.
+static std::wstring UrlHost(const std::wstring& url) {
+    std::wstring h = url;
+    const size_t scheme = h.find(L"://");
+    if (scheme != std::wstring::npos) h = h.substr(scheme + 3);
+    const size_t at = h.rfind(L'@');
+    if (at != std::wstring::npos) h = h.substr(at + 1);
+    const size_t slash = h.find_first_of(L"/?#");
+    if (slash != std::wstring::npos) h = h.substr(0, slash);
+    const size_t colon = h.rfind(L':');
+    if (colon != std::wstring::npos && h.find(L']') == std::wstring::npos)
+        h = h.substr(0, colon);
+    if (h.rfind(L"www.", 0) == 0) h = h.substr(4);
+    return LowerWide(h);
+}
+
+std::vector<std::wstring> GetUrlSuggestions(const std::wstring& prefix,
+                                            size_t maxCount) {
+    static CachedUrlFile historyCache;
+    static CachedUrlFile bookmarkCache;
+    RefreshUrlCache(historyCache, HistoryFilePath());
+    RefreshUrlCache(bookmarkCache, BookmarksFilePath());
+
+    const std::wstring needle = LowerWide(prefix);
+    if (needle.size() < 2)
+        return {};
+
+    // Top domains by visit count, rebuilt only when history changes.
+    // Powers both domain-level matches ("github" → github.com) and the
+    // "frequent site" boost for full-URL matches.
+    static fs::file_time_type freqStamp{};
+    static bool freqValid = false;
+    static std::vector<std::pair<int, std::wstring>> topDomains;
+    static std::unordered_map<std::wstring, int> domainRank;
+    if (!freqValid || freqStamp != historyCache.mtime) {
+        freqStamp = historyCache.mtime;
+        freqValid = true;
+        std::unordered_map<std::wstring, int> freq;
+        std::unordered_map<std::wstring, std::wstring> rep;
+        for (const auto& u : historyCache.urls) {
+            const std::wstring host = UrlHost(u);
+            if (host.empty()) continue;
+            ++freq[host];
+            if (!rep.count(host)) rep[host] = u;
+        }
+        topDomains.clear();
+        domainRank.clear();
+        for (const auto& kv : freq)
+            topDomains.push_back({kv.second, kv.first});
+        std::sort(topDomains.begin(), topDomains.end(),
+                  [](const auto& a, const auto& b) {
+                      return a.first != b.first
+                                 ? a.first > b.first : a.second < b.second;
+                  });
+        if (topDomains.size() > 100) topDomains.resize(100);
+        for (size_t i = 0; i < topDomains.size(); ++i)
+            domainRank[topDomains[i].second] = static_cast<int>(i);
+    }
+
+    std::vector<std::wstring> result;
+    std::unordered_set<std::wstring> seen;
+    auto tryAdd = [&](const std::wstring& url) {
+        if (result.size() >= maxCount) return;
+        if (seen.insert(url).second)
+            result.push_back(url);
+    };
+    auto urlMatches = [&](const std::wstring& url) {
+        const std::wstring low = LowerWide(url);
+        if (low.find(needle) != std::wstring::npos) return true;
+        // Domain-level match: typing "git" suggests github.com pages.
+        const std::wstring host = UrlHost(url);
+        return !host.empty() && host.find(needle) != std::wstring::npos;
+    };
+
+    // Pass 1: bookmarks and history entries whose URL contains the needle.
+    for (const auto& url : bookmarkCache.urls)
+        if (urlMatches(url)) tryAdd(url);
+    for (auto it = historyCache.urls.rbegin();
+         it != historyCache.urls.rend(); ++it)
+        if (urlMatches(*it)) tryAdd(*it);
+
+    // Pass 2: top domains matching the needle — suggest the domain's most
+    // recent URL even if the full URL itself doesn't contain the text.
+    for (const auto& kv : topDomains) {
+        if (result.size() >= maxCount) break;
+        if (kv.second.find(needle) == std::wstring::npos) continue;
+        const auto repIt = std::find_if(
+            historyCache.urls.rbegin(), historyCache.urls.rend(),
+            [&](const std::wstring& u) { return UrlHost(u) == kv.second; });
+        if (repIt != historyCache.urls.rend())
+            tryAdd(*repIt);
+    }
+
+    // Re-rank: bookmarks keep priority; within the rest, more-visited
+    // domains float up (stable sort keeps recency order otherwise).
+    if (result.size() > 1) {
+        std::stable_sort(result.begin() +
+                             std::min<size_t>(result.size(),
+                                 bookmarkCache.urls.size()),
+                         result.end(),
+                         [&](const std::wstring& a, const std::wstring& b) {
+            const auto ra = domainRank.find(UrlHost(a));
+            const auto rb = domainRank.find(UrlHost(b));
+            const int rankA = ra == domainRank.end() ? 1000 : ra->second;
+            const int rankB = rb == domainRank.end() ? 1000 : rb->second;
+            return rankA != rankB ? rankA < rankB : false;
+        });
+    }
+    return result;
+}

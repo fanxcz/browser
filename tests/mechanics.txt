@@ -1,0 +1,178 @@
+# Full mechanics test — drives the live Browser.exe like a user.
+attachname Browser.exe
+wait 800
+size
+
+# --- unwind to a normal page first (terminal/internal pages swallow
+#     omnibox input — "home" there would run as a shell command) ---
+key alt+left
+wait 800
+key alt+left
+wait 800
+key alt+left
+wait 800
+key ctrl+l
+wait 300
+text home
+wait 200
+key enter
+wait 2000
+expect Введите запрос
+
+# --- omnibox navigation ---
+key ctrl+l
+wait 300
+text https://example.com
+wait 200
+key enter
+wait 6000
+expect Example Domain
+expect This domain
+
+# --- mouse drag selection + Ctrl+C ---
+down 5 8
+move 40 8
+move 60 8
+up 60 8
+wait 400
+key ctrl+c
+wait 300
+expectclip Example
+
+# --- copy page URL with y ---
+key y
+wait 300
+expectclip example.com
+
+# --- back/forward ---
+key alt+left
+wait 1500
+key alt+right
+wait 5000
+expect Example Domain
+
+# --- scroll wheel ---
+wheel 100 20 -3
+wait 400
+wheel 100 20 3
+wait 400
+
+# --- reader mode toggle ---
+key m
+wait 800
+key m
+wait 800
+
+# --- undo in omnibox ---
+key ctrl+l
+wait 300
+text zzzundo
+wait 300
+expect zzzundo
+key ctrl+z
+wait 300
+expectnot zzzundo
+key ctrl+u
+wait 200
+
+# --- tabs: new tab shows home ---
+key ctrl+t
+wait 1500
+expect Введите запрос
+key ctrl+w
+wait 1000
+expect Example Domain
+
+# --- internal pages ---
+key ctrl+h
+wait 1500
+expect История
+key ctrl+b
+wait 1500
+expect Закладк
+key alt+left
+wait 1500
+
+# --- downloads page ---
+key ctrl+j
+wait 1500
+dump build/Release/dl_page.txt
+expect Загрузк
+key alt+left
+wait 1500
+
+# --- cache internal page ---
+key ctrl+l
+wait 300
+text cache
+wait 200
+key enter
+wait 2500
+dump build/Release/cache_page.txt
+expect Кэш
+# leave via back (internal pages don't record visits)
+key alt+left
+wait 1500
+
+# --- help command ---
+key ctrl+l
+wait 300
+text help
+wait 300
+key enter
+wait 2500
+dump build/Release/help_page.txt
+expect Справка
+expect НАВИГАЦИЯ
+key alt+left
+wait 1500
+
+# --- settings menu via mouse (gear button: row 1, right side) ---
+size
+down 110 1
+up 110 1
+wait 600
+dump build/Release/after_menu.txt
+expect Переключить тему
+key esc
+wait 300
+
+# --- notes page ---
+key ctrl+l
+wait 300
+text notes
+wait 200
+key enter
+wait 2000
+expect Заметки
+key alt+left
+wait 1500
+
+# --- about page ---
+key ctrl+l
+wait 300
+text about
+wait 200
+key enter
+wait 3500
+dump build/Release/about_page.txt
+expect Браузер
+key alt+left
+wait 1500
+
+# --- double-click selects a word on the page (row 8 = heading area) ---
+dblclick 12 8
+wait 400
+key ctrl+c
+wait 300
+expectclip Exa
+
+# --- single click on empty area does NOT select/navigate ---
+down 5 20
+up 5 20
+wait 300
+expect Example Domain
+
+dump build/Release/final_screen.txt
+shot build/Release/final.png
+echo DONE

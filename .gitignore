@@ -1,0 +1,37 @@
+# CMake / Visual Studio
+/build/
+/out/
+/.vs/
+/CMakeFiles/
+/CMakeCache.txt
+/Testing/
+*.sln
+*.vcxproj*
+*.user
+*.pdb
+*.ilk
+*.obj
+*.lib
+*.exe
+
+# User data; do not commit browsing history or downloaded files
+/cache/*
+!/cache/.gitkeep
+/downloads/*
+!/downloads/.gitkeep
+/data/*
+!/data/.gitkeep
+/saved/*
+!/saved/.gitkeep
+
+# Temporary files
+*.part
+*.tmp
+.DS_Store
+Thumbs.db
+
+
+# Local archives
+/*.zip
+
+deps/
