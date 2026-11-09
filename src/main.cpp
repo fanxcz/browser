@@ -288,6 +288,19 @@ int wmainImpl() {
             continue;
         }
 
+        if (command == "terminal" || command == "shell") {
+            // Line-mode fallback: run a Windows command in this console.
+            std::string c;
+            std::getline(input, c);
+            c = Trim(c);
+            if (c.empty()) {
+                std::cout << "Usage: terminal <command>\n";
+            } else {
+                std::system(c.c_str());
+            }
+            continue;
+        }
+
         if (command == "open") {
             std::string target;
             input >> target;

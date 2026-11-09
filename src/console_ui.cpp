@@ -2,6 +2,7 @@
 #include "wvhost.h"
 
 #include <array>
+#include <cstring>
 #include <cwchar>
 #include <fstream>
 #include <functional>
@@ -1005,14 +1006,14 @@ namespace console_ui {
             } else {
                 Center(state, center - 4, L"Browser", kBright);
             }
-            // ":cmd" input renders as a bottom command line instead of
-            // the top omnibox (like Vim's command line).
             DrawSearchBox(state, center - 2);
             Center(state, center + 2,
                    L"Введите запрос или адрес  ·  Enter ", kMuted);
             Center(state, center + 4,
                    L"Ctrl+H — история   Ctrl+F — найти   j/k — ссылки   Enter — открыть   o — адрес", kMuted);
-            DrawHomeBookmarks(state, center + 6);
+            Center(state, center + 5,
+                   L"terminal — консоль Windows   ai — ИИ без ключа   V — выделение текста", kAccent);
+            DrawHomeBookmarks(state, center + 7);
             Center(state, height - 2,
                    L"Tab — поле/ссылки   Ctrl+L — адрес   F6 — поле   b/f — назад/вперёд   Esc — выход", kMuted);
             std::wstring statusLine = g_consoleStatus;
@@ -1044,10 +1045,24 @@ namespace console_ui {
             DrawSearchBox(state, 3);
 
             const size_t textLimit = std::min<size_t>(g_currentText.size(), MAX_DISPLAY_CHARS);
-            const std::wstring pageText = ToWide(g_currentText.substr(0, textLimit));
-            std::vector<PageLine> pageLines;
             const size_t lineWidth = static_cast<size_t>(std::max(20, width - 8));
-            const auto wrapped = Wrap(pageText, lineWidth, 3000);
+            // Wrap() is the most expensive part of a frame — cache its result
+            // keyed on the displayed text prefix and line width.
+            static std::string wrapCacheKey;
+            static size_t wrapCacheWidth = 0;
+            static std::vector<std::wstring> wrapCache;
+            const bool wrapHit = wrapCacheWidth == lineWidth &&
+                wrapCacheKey.size() == textLimit &&
+                (textLimit == 0 ||
+                 std::memcmp(wrapCacheKey.data(), g_currentText.data(),
+                             textLimit) == 0);
+            if (!wrapHit) {
+                wrapCacheKey.assign(g_currentText.data(), textLimit);
+                wrapCacheWidth = lineWidth;
+                wrapCache = Wrap(ToWide(wrapCacheKey), lineWidth, 3000);
+            }
+            const auto& wrapped = wrapCache;
+            std::vector<PageLine> pageLines;
             pageLines.reserve(wrapped.size() + g_currentLinks.size() +
                               state.visibleFields.size() + 6);
             for (const auto& line : wrapped) {
@@ -1239,6 +1254,26 @@ namespace console_ui {
                 }
             }
 
+            // Scrollbar on the right edge of the content area.
+            if (pageLines.size() > static_cast<size_t>(capacity) &&
+                width >= 12) {
+                const int sx = width - 2;
+                const size_t total = pageLines.size();
+                const size_t cap = static_cast<size_t>(capacity);
+                const size_t thumbH = std::max<size_t>(
+                    1, cap * cap / total);
+                const size_t travel = cap > thumbH ? cap - thumbH : 0;
+                const size_t range = total > cap ? total - cap : 1;
+                const size_t thumbTop = travel == 0 ? 0 :
+                    (state.scrollOffset * travel) / range;
+                for (int i = 0; i < capacity; ++i) {
+                    const bool inThumb = static_cast<size_t>(i) >= thumbTop &&
+                        static_cast<size_t>(i) < thumbTop + thumbH;
+                    At(state, sx, contentTop + i, L"█",
+                       inThumb ? kAccent : kMuted);
+                }
+            }
+
             const std::wstring position = pageLines.empty() ? L"" :
                 std::to_wstring(state.scrollOffset + 1) + L"-" +
                 std::to_wstring(std::min(pageLines.size(),
@@ -1323,11 +1358,14 @@ namespace console_ui {
                     std::to_wstring(pct) + L"% · " +
                     std::to_wstring(g_currentLinks.size()) + L" сс.";
                 if (g_isFeed) {
+                    // Count feed items lazily — only on feed pages.
+                    const std::wstring feedText =
+                        ToWide(g_currentText.substr(0, textLimit));
                     size_t items = 0;
-                    for (size_t i = 0; i + 2 < pageText.size(); ++i)
-                        if (pageText[i] == L'\n' && pageText[i + 1] == L'•')
+                    for (size_t i = 0; i + 2 < feedText.size(); ++i)
+                        if (feedText[i] == L'\n' && feedText[i + 1] == L'•')
                             ++items;
-                    if (pageText.rfind(L"•", 0) == 0) ++items;
+                    if (feedText.rfind(L"•", 0) == 0) ++items;
                     ind += L" · лента: " + std::to_wstring(items);
                 }
                 At(state, width - static_cast<int>(ind.size()) - 2,
@@ -3183,6 +3221,7 @@ namespace console_ui {
             // If a new page arrived, reset scroll/selection state.
             if (g_currentUrl != lastUrl) {
                 lastUrl = g_currentUrl;
+                ClearSelection(state);
                 state.selectedItem = -1;
                 state.hoveredItem = -1;
                 state.scrollOffset = 0;
