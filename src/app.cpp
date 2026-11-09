@@ -5,6 +5,9 @@
 #include <ctime>
 #include <cwchar>
 #include <deque>
+#include <psapi.h>
+#include <random>
+#include <regex>
 #include <shellapi.h>
 #include <unordered_map>
 #include <unordered_set>
@@ -86,9 +89,16 @@ bool g_hasNavigation = false;
 bool g_useAnsi = false;
 
 std::atomic_bool g_loadRunning{false};
+Clock::time_point g_loadStart{};
 std::atomic_bool g_loadCancel{false};
 std::mutex g_loadMutex;
 
+// Internal pages defined later in this file.
+std::string AboutPageText();
+std::string NotesPageText();
+std::string CachePageText();
+std::string DefinePageText(const std::string& wordEnc);
+std::string TrPageText(const std::string& textEnc);
 
 // ---------------------------------------------------------------------------
 // Page loading (network + parse)
@@ -1277,6 +1287,66 @@ void LoadWorker(LoadJob job) {
                 result.ok = false;
                 result.statusText = L"Ответ ИИ больше не доступен.";
             }
+        } else if (job.url == std::wstring(kInternalPrefix) + L"about") {
+            result.outcome.ok = true;
+            result.outcome.finalUrl = job.url;
+            result.outcome.title = "О браузере";
+            result.outcome.text = AboutPageText();
+            result.outcome.links = {
+                {"Сайт проекта", L"https://fanxcz.github.io/browser/"},
+                {"Исходники на GitHub", L"https://github.com/fanxcz/browser"},
+                {"Релизы", L"https://github.com/fanxcz/browser/releases"},
+                {"Issues / обратная связь",
+                 L"https://github.com/fanxcz/browser/issues"},
+            };
+            result.ok = true;
+            result.statusText = L"О браузере.";
+        } else if (job.url == std::wstring(kInternalPrefix) + L"notes") {
+            result.outcome.ok = true;
+            result.outcome.finalUrl = job.url;
+            result.outcome.title = "Заметки";
+            result.outcome.text = NotesPageText();
+            result.ok = true;
+            result.statusText =
+                L"Заметки — note <текст> добавляет строку.";
+        } else if (job.url == std::wstring(kInternalPrefix) + L"cache") {
+            result.outcome.ok = true;
+            result.outcome.finalUrl = job.url;
+            result.outcome.title = "Кэш";
+            result.outcome.text = CachePageText();
+            result.ok = true;
+            result.statusText = L"Содержимое кэша.";
+        } else if (job.url == std::wstring(kInternalPrefix) + L"ip") {
+            Response ip = Request(L"https://api.ipify.org", CacheMode::Bypass);
+            result.outcome.ok = ip.ok;
+            result.outcome.finalUrl = job.url;
+            result.outcome.title = "Мой IP";
+            result.outcome.text = ip.ok
+                ? "Внешний IP-адрес:\n\n" +
+                  std::string(ip.body.begin(), ip.body.end()) + "\n"
+                : "Не удалось получить IP — сервис недоступен.\n";
+            result.ok = true;
+            result.statusText = L"Внешний IP-адрес.";
+        } else if (job.url.rfind(
+                       std::wstring(kInternalPrefix) + L"define/", 0) == 0) {
+            const std::string word = ToUtf8(job.url.substr(
+                std::wstring(kInternalPrefix).size() + 7));
+            result.outcome.ok = true;
+            result.outcome.finalUrl = job.url;
+            result.outcome.title = "Словарь";
+            result.outcome.text = DefinePageText(word);
+            result.ok = true;
+            result.statusText = L"Словарь — dictionaryapi.dev.";
+        } else if (job.url.rfind(
+                       std::wstring(kInternalPrefix) + L"tr/", 0) == 0) {
+            const std::string text = ToUtf8(job.url.substr(
+                std::wstring(kInternalPrefix).size() + 3));
+            result.outcome.ok = true;
+            result.outcome.finalUrl = job.url;
+            result.outcome.title = "Перевод";
+            result.outcome.text = TrPageText(text);
+            result.ok = true;
+            result.statusText = L"Перевод — Google gtx.";
         } else if (job.url == std::wstring(kInternalPrefix) + L"stats") {
             result.outcome.ok = true;
             result.outcome.finalUrl = job.url;
@@ -1372,6 +1442,7 @@ void StartJobNow(const LoadJob& job) {
     g_loadCancel.store(false);
     g_loadDownloaded.store(0);
     g_loadTotal.store(0);
+    g_loadStart = Clock::now();
     g_loadRunning.store(true);
     g_loadThread = std::thread(LoadWorker, job);
 }
@@ -1436,6 +1507,9 @@ void ApplyResult(const LoadResult& result) {
             tab.navIndex = static_cast<size_t>(job.navIndexTarget);
         g_consoleStatus = L"Страница загружена во вкладке " +
             std::to_wstring(ti + 1) + L".";
+        // Audible ping for background-tab loads — like a browser's
+        // "page loaded" notification.
+        if (ti != g_activeTab) Beep(1600, 60);
         return;
     }
 
@@ -1600,6 +1674,9 @@ static std::wstring FmtBytes(uint64_t bytes) {
     return std::to_wstring(bytes) + L" Б";
 }
 
+// Session start timestamp for the uptime counter in browser://stats.
+static const Clock::time_point g_sessionStart = Clock::now();
+
 // browser://stats page body — network/cache/download counters.
 std::string StatsPageText() {
     uint64_t cacheBytes = 0;
@@ -1623,6 +1700,19 @@ std::string StatsPageText() {
             if (entry.is_regular_file(ec)) ++dlFiles;
         }
     }
+    // Process RAM + session uptime.
+    uint64_t ramMB = 0;
+    PROCESS_MEMORY_COUNTERS pmc{};
+    if (K32GetProcessMemoryInfo(GetCurrentProcess(), &pmc,
+                                sizeof(pmc)))
+        ramMB = pmc.WorkingSetSize / (1024 * 1024);
+    const auto up = Clock::now() - g_sessionStart;
+    const long upMin = std::chrono::duration_cast<
+        std::chrono::minutes>(up).count();
+    const std::wstring upStr = upMin >= 60
+        ? std::to_wstring(upMin / 60) + L" ч " +
+          std::to_wstring(upMin % 60) + L" мин"
+        : std::to_wstring(upMin) + L" мин";
     const std::wstring text =
         L"Статистика браузера\n"
         L"\n"
@@ -1639,6 +1729,11 @@ std::string StatsPageText() {
         L"  Открытых вкладок: " + std::to_wstring(UiTabCount()) +
         L"\n  Активная вкладка: " +
         std::to_wstring(UiActiveTabIndex() + 1) +
+        L"\n  RAM процесса: " + std::to_wstring(ramMB) + L" МБ\n"
+        L"  Аптайм: " + upStr +
+        L"\n  Элементов на странице: " +
+        std::to_wstring(g_currentLinks.size() + g_currentImages.size() +
+                        g_currentFields.size()) +
         L"\n  Движок: Browser Console " + ToWide(kAppVersion) + L"\n";
     return ToUtf8(text);
 }
@@ -2334,6 +2429,23 @@ std::string HelpPageText() {
         "  backup / session — бэкап и экспорт сессии.\n"
         "  clear-history, clear-history-older <дн>, cache-clear.\n"
         "\n"
+        "■ УТИЛИТЫ\n"
+        "  about — о браузере, ip — внешний IP-адрес.\n"
+        "  notes — заметки, note <текст> — добавить заметку.\n"
+        "  cache — содержимое кэша.\n"
+        "  define <слово> / dict — словарь (dictionaryapi.dev).\n"
+        "  tr <текст> / translate — перевод (Google gtx).\n"
+        "  w <запрос> / wiki — поиск по Википедии.\n"
+        "  timer <число><s|m|h> — таймер в статус-баре.\n"
+        "  pass [длина] — пароль в буфер, uuid — UUID.\n"
+        "  calc <выражение> — калькулятор.\n"
+        "  title / links / mdlink — заголовок/ссылки/MD-ссылка.\n"
+        "  words / readtime — слова и время чтения страницы.\n"
+        "  scroll <1-20> — строк за щелчок колеса.\n"
+        "  home <url> — своя главная страница.\n"
+        "  feedback / repo / site — GitHub-ссылки проекта.\n"
+        "  ver — версия браузера.\n"
+        "\n"
         "■ КЛАВИШИ НА СТРАНИЦЕ\n"
         "  j/k, Enter — ссылка, o — адрес, ,/. — назад/вперёд,\n"
         "  b/f — история/вперёд по ссылкам, g/G — края,\n"
@@ -2342,6 +2454,219 @@ std::string HelpPageText() {
         "  Ctrl+Home/End — в начало/конец, Ctrl+PgUp/PgDn — блоки.\n"
         "  Колесо мыши — прокрутка, Esc — сброс выделения/отмена.\n"
         "  Ctrl+Q — выход.\n";
+}
+
+// --- Settings key=value store (data/settings.txt) ----------------------
+std::wstring UiGetSetting(const std::wstring& key) {
+    std::wifstream in(DataDirPath() / L"settings.txt");
+    std::wstring line;
+    while (std::getline(in, line)) {
+        const size_t eq = line.find(L'=');
+        if (eq != std::wstring::npos &&
+            TrimWide(line.substr(0, eq)) == key)
+            return TrimWide(line.substr(eq + 1));
+    }
+    return {};
+}
+
+void UiSetSetting(const std::wstring& key, const std::wstring& value) {
+    const fs::path path = DataDirPath() / L"settings.txt";
+    std::vector<std::wstring> lines;
+    {
+        std::wifstream in(path);
+        std::wstring line;
+        while (std::getline(in, line)) {
+            const size_t eq = line.find(L'=');
+            if (eq != std::wstring::npos &&
+                TrimWide(line.substr(0, eq)) == key)
+                continue; // drop old value for this key
+            if (!TrimWide(line).empty()) lines.push_back(line);
+        }
+    }
+    if (!value.empty()) lines.push_back(key + L"=" + value);
+    std::wofstream out(path, std::ios::trunc);
+    for (const auto& l : lines) out << l << '\n';
+}
+
+// Homepage override: "home <url>" in the omnibox persists here; empty
+// means the built-in start page.
+std::wstring UiHomepage() { return UiGetSetting(L"home"); }
+
+// Open an arbitrary URL in the system browser (project links etc.).
+void UiShellOpen(const std::wstring& url) {
+    ShellExecuteW(nullptr, L"open", url.c_str(), nullptr, nullptr,
+                  SW_SHOWNORMAL);
+}
+
+// --- browser://about ---------------------------------------------------
+std::string AboutPageText() {
+    return ToUtf8(
+        L"Browser Console " + ToWide(kAppVersion) +
+        L" — консольный браузер для Windows\n"
+        L"\n"
+        L"■ ЧТО ЭТО\n"
+        L"  Полноценный браузер в терминале: HTTP/HTTPS, кэш, формы,\n"
+        L"  вкладки, история, закладки, загрузки, RSS, ИИ, терминал.\n"
+        L"\n"
+        L"■ УПРАВЛЕНИЕ\n"
+        L"  Мышь: выделение текста, клики по ссылкам и кнопкам.\n"
+        L"  Клавиатура: j/k — элементы, Enter — открыть, Ctrl+L — адрес,\n"
+        L"  / — найти, V — выделение, ? или команда help — справка.\n"
+        L"\n"
+        L"■ АВТОР\n"
+        L"  fanxcz — github.com/fanxcz\n"
+        L"\n"
+        L"■ ССЫЛКИ (кликабельны ниже)\n"
+        L"  Сайт проекта, исходники и актуальный релиз — на GitHub.\n");
+}
+
+// --- browser://notes (data/notes.txt) ----------------------------------
+namespace {
+fs::path NotesFilePath() { return DataDirPath() / L"notes.txt"; }
+}
+
+std::string NotesPageText() {
+    std::ifstream in(NotesFilePath(), std::ios::binary);
+    std::string all((std::istreambuf_iterator<char>(in)),
+                    std::istreambuf_iterator<char>());
+    if (all.empty())
+        all =
+            "Быстрые заметки.\n"
+            "Команда `note <текст>` добавляет строку сюда — она хранится\n"
+            "в data/notes.txt и доступна после перезапуска.\n"
+            "`notes` — эта страница.\n";
+    return all;
+}
+
+void UiAddNote(const std::wstring& text) {
+    std::wofstream out(NotesFilePath(), std::ios::app);
+    out << text << L'\n';
+}
+
+// --- browser://cache ----------------------------------------------------
+std::string CachePageText() {
+    uint64_t total = 0;
+    std::vector<std::pair<std::wstring, uint64_t>> files;
+    std::error_code ec;
+    if (fs::exists(CacheDirPath(), ec)) {
+        for (const auto& e : fs::recursive_directory_iterator(
+                 CacheDirPath(),
+                 fs::directory_options::skip_permission_denied, ec)) {
+            if (!e.is_regular_file(ec)) continue;
+            const uint64_t sz = e.file_size(ec);
+            total += sz;
+            files.push_back({e.path().filename().wstring(), sz});
+        }
+    }
+    std::sort(files.begin(), files.end(),
+              [](const auto& a, const auto& b) { return a.second > b.second; });
+    std::wstring text =
+        L"Кэш страниц — " + std::to_wstring(files.size()) +
+        L" файлов, " + FmtBytes(total) + L"\n\n";
+    size_t shown = 0;
+    for (const auto& f : files) {
+        if (shown++ >= 200) break;
+        text += L"  " + f.first + L"  —  " + FmtBytes(f.second) + L"\n";
+    }
+    if (files.empty()) text += L"Кэш пуст.\n";
+    return ToUtf8(text);
+}
+
+// --- browser://ip -------------------------------------------------------
+// (worker fetches api.ipify.org — plain-text body)
+
+// --- browser://define/<word> --------------------------------------------
+// Free dictionary API (dictionaryapi.dev), no key required.
+std::string DefinePageText(const std::string& wordEnc) {
+    const std::string word = PercentDecode(wordEnc);
+    if (word.empty()) return "Использование: define <слово>\n";
+    Response r = Request(
+        L"https://api.dictionaryapi.dev/api/v2/entries/en/" +
+            ToWide(UrlEncode(word)),
+        CacheMode::Bypass);
+    if (!r.ok || r.status != 200)
+        return "Слово не найдено или сервис недоступен: " + word + "\n";
+    const std::string body(r.body.begin(), r.body.end());
+    // Tolerant JSON scraping: pull fields in document order.
+    struct Hit { size_t pos; char kind; std::string val; };
+    std::vector<Hit> hits;
+    static const std::regex re(
+        "\\\"(partOfSpeech|phonetic|definition|example)\\\"\\s*:\\s*\\\"((?:[^\\\"\\\\]|\\\\.)*)\\\"");
+    for (std::sregex_iterator it(body.begin(), body.end(), re), end; it != end; ++it) {
+        const std::string kind = (*it)[1];
+        hits.push_back({static_cast<size_t>(it->position()),
+                        kind.empty() ? '?' : kind[0], (*it)[2]});
+    }
+    if (hits.empty()) return "Нет данных для слова: " + word + "\n";
+    std::wstring out = L"Словарь: " + ToWide(word) + L"\n\n";
+    size_t shown = 0;
+    for (const auto& h : hits) {
+        if (shown >= 14) break;
+        ++shown;
+        if (h.kind == 'p') out += L"■ " + ToWide(h.val) + L"\n";
+        else if (h.kind == 'd') out += L"  • " + ToWide(h.val) + L"\n";
+        else if (h.kind == 'e') out += L"    e.g. " + ToWide(h.val) + L"\n";
+        else if (h.kind == 'h' && out.find(L'—') == std::wstring::npos)
+            out += L"  " + ToWide(h.val) + L"\n";
+    }
+    return ToUtf8(out);
+}
+
+// --- browser://tr/<text> ------------------------------------------------
+// Google Translate free endpoint (client=gtx), output language Russian.
+std::string JsonUnescape(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (s[i] == '\\' && i + 1 < s.size()) {
+            const char n = s[++i];
+            if (n == 'n') out += '\n';
+            else if (n == 't') out += '\t';
+            else if (n == 'u' && i + 4 < s.size()) {
+                unsigned cp = 0;
+                for (int k = 0; k < 4; ++k) {
+                    const char c = s[++i];
+                    cp = cp * 16 + (c <= '9' ? c - '0'
+                          : (c | 32) - 'a' + 10);
+                }
+                // UTF-8 encode the code point.
+                if (cp < 0x80) out += static_cast<char>(cp);
+                else if (cp < 0x800) {
+                    out += static_cast<char>(0xC0 | (cp >> 6));
+                    out += static_cast<char>(0x80 | (cp & 0x3F));
+                } else {
+                    out += static_cast<char>(0xE0 | (cp >> 12));
+                    out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+                    out += static_cast<char>(0x80 | (cp & 0x3F));
+                }
+            } else out += n;
+        } else out += s[i];
+    }
+    return out;
+}
+
+std::string TrPageText(const std::string& textEnc) {
+    const std::string text = PercentDecode(textEnc);
+    if (text.empty()) return "Использование: translate <текст>\n";
+    Response r = Request(
+        L"https://translate.googleapis.com/translate_a/single?client=gtx"
+        L"&sl=auto&tl=ru&dt=t&q=" +
+            ToWide(UrlEncode(text)),
+        CacheMode::Bypass);
+    if (!r.ok || r.status != 200)
+        return "Перевод недоступен.\n";
+    const std::string body(r.body.begin(), r.body.end());
+    // Every inner segment is ["translated","source",...]: the first
+    // quoted string of each [...] block is the translation.
+    static const std::regex re("\\[\\s*\\\"((?:[^\\\"\\\\]|\\\\.)*)\\\"");
+    std::wstring out;
+    for (std::sregex_iterator it(body.begin(), body.end(), re), end;
+         it != end; ++it) {
+        out += ToWide(JsonUnescape((*it)[1]));
+    }
+    if (out.empty()) return "Перевод недоступен.\n";
+    out = L"Перевод (auto → ru):\n\n" + out + L"\n";
+    return ToUtf8(out);
 }
 
 void UiOpenTerminal() { UiOpenInternalPage(L"terminal"); }
@@ -2638,6 +2963,23 @@ TabViewState UiCloseTabIndex(size_t index, const TabViewState& view) {
     return result;
 }
 
+TabViewState UiCloseOtherTabs(const TabViewState& view) {
+    EnsureTabs();
+    if (g_tabs.size() <= 1) {
+        g_consoleStatus = L"Других вкладок нет.";
+        return view;
+    }
+    UiSaveViewState(view);
+    // Close from the back so indices stay valid; keep the active tab.
+    for (size_t i = g_tabs.size(); i-- > 0;) {
+        if (i == g_activeTab) continue;
+        CloseTabAt(i, view, false);
+    }
+    SaveTabs();
+    g_consoleStatus = L"Закрыты все вкладки, кроме текущей.";
+    return g_tabs[g_activeTab].view;
+}
+
 TabViewState UiReopenClosedTab(const TabViewState& view) {
     EnsureTabs();
     if (g_closedTabs.empty()) {
@@ -2725,11 +3067,14 @@ void SaveTabs() {
         // downloads, terminal, help (history/bookmarks build
         // synchronously and stay session-only).
         if (IsInternalPageUrl(tab.url)) {
-            const bool restorable =
-                tab.url.find(L"downloads") != std::wstring::npos ||
-                tab.url.find(L"terminal") != std::wstring::npos ||
-                tab.url.find(L"help") != std::wstring::npos ||
-                tab.url.find(L"stats") != std::wstring::npos;
+            static const wchar_t* kOk[] = {
+                L"downloads", L"terminal", L"help", L"stats",
+                L"about", L"notes", L"cache", L"ip", L"define/", L"tr/" };
+            bool restorable = false;
+            for (const wchar_t* k : kOk)
+                if (tab.url.find(k) != std::wstring::npos) {
+                    restorable = true; break;
+                }
             if (!restorable) continue;
         }
         file << ToUtf8(tab.url);

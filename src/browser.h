@@ -219,6 +219,7 @@ extern bool g_useAnsi;
 extern std::atomic_bool g_loadRunning;
 extern std::atomic_bool g_loadCancel;
 extern std::mutex g_loadMutex;
+extern Clock::time_point g_loadStart; // when the active load began (speed/ETA)
 
 // ---------------------------------------------------------------------------
 // util.cpp — encoding, hashing, small helpers, print helpers
@@ -411,6 +412,7 @@ void UiCancelLoad();
 TabViewState UiNewTab(const TabViewState& view);
 TabViewState UiCloseTab(const TabViewState& view);          // closes active
 TabViewState UiCloseTabIndex(size_t index, const TabViewState& view);
+TabViewState UiCloseOtherTabs(const TabViewState& view);
 TabViewState UiCycleTab(int delta, const TabViewState& view);
 TabViewState UiSwitchTabTo(size_t index, const TabViewState& view);
 TabViewState UiOpenInNewTab(const std::wstring& url, const TabViewState& view);
@@ -438,6 +440,11 @@ bool UiTerminalRun(const std::wstring& cmdLine);
 std::string TermPageText(); // terminal transcript as page body
 std::string HelpPageText(); // browser://help page body
 std::string StatsPageText(); // browser://stats page body
+std::wstring UiGetSetting(const std::wstring& key);
+void UiSetSetting(const std::wstring& key, const std::wstring& value);
+std::wstring UiHomepage();
+void UiShellOpen(const std::wstring& url);
+void UiAddNote(const std::wstring& text);
 void UiOpenDownloadedFile(const std::wstring& name);
 void UiVerifyDownloadedFile(const std::wstring& name);
 void UiOpenExternalBrowser();

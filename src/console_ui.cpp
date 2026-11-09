@@ -2,10 +2,13 @@
 #include "wvhost.h"
 
 #include <array>
+#include <cmath>
+#include <cctype>
 #include <cstring>
 #include <cwchar>
 #include <fstream>
 #include <functional>
+#include <random>
 #include <vector>
 
 namespace console_ui {
@@ -63,6 +66,7 @@ namespace console_ui {
     std::vector<ThemePack> g_themes;
     size_t g_themeIndex = 0;
     int g_density = 1;
+    int g_scrollLines = 3; // wheel lines per notch (`scroll <n>` command)
 
     // Map #RRGGBB to the nearest of the 16 console colors.
     WORD ConsoleColorFromHex(const std::string& hex) {
@@ -320,6 +324,19 @@ namespace console_ui {
         int lastClickX = -1, lastClickY = -1;
         int clickCount = 0;
         Clock::time_point lastClickTime{};
+        // Deferred single click: dispatched ~250 ms after release so a
+        // fast second press can promote it to word/line selection.
+        bool pendingClickValid = false;
+        int pendingClickX = 0, pendingClickY = 0;
+        bool pendingClickCtrl = false;
+        Clock::time_point pendingClickTime{};
+        bool clickCtrl = false;      // Ctrl held at press → open in new tab
+        // Countdown timer (`timer 5m`) shown in the status bar.
+        Clock::time_point timerEnd{};
+        std::wstring timerLabel;
+        // Download speed sampling for the status bar.
+        uint64_t dlPrevBytes = 0;
+        Clock::time_point dlPrevTime{};
         // Scroll/resize invalidates the screen-selection rectangle — the
         // rows it pointed at no longer hold the same text.
         size_t lastScrollOffset = static_cast<size_t>(-1);
@@ -790,33 +807,71 @@ namespace console_ui {
     }
 
     // Bookmark shortcuts shown on the home (new-tab) page.
+    // Top-3 most visited sites from history.txt for the home page.
+    std::vector<std::wstring> RecentTopSites() {
+        std::unordered_map<std::wstring, int> freq;
+        for (const auto& e : ReadHistoryEntries(HistoryFilePath()))
+            ++freq[e.url];
+        std::vector<std::pair<std::wstring, int>> v(freq.begin(), freq.end());
+        std::sort(v.begin(), v.end(),
+                  [](const auto& a, const auto& b) { return a.second > b.second; });
+        std::vector<std::wstring> out;
+        for (size_t i = 0; i < v.size() && out.size() < 3; ++i) {
+            if (IsInternalPageUrl(v[i].first)) continue;
+            out.push_back(v[i].first);
+        }
+        return out;
+    }
+
     void DrawHomeBookmarks(State& state, int topRow) {
         state.bookmarkHits.clear();
         state.homeBookmarksShown = false;
         const auto bookmarks = GetBookmarksCached();
-        if (bookmarks.empty() || !state.input.empty()) return;
-        // Fit between the hints and the status/footer rows.
-        int room = state.height - 3 - topRow - 1;
+        const auto recent = bookmarks.empty() && !state.input.empty()
+            ? std::vector<std::wstring>{} : RecentTopSites();
+        if ((bookmarks.empty() && recent.empty()) || !state.input.empty())
+            return;
+        // Fit between the hints and the status/footer rows; leave two
+        // rows for the "recently visited" line when it exists.
+        int room = state.height - 3 - topRow - 1 -
+                   (recent.empty() ? 0 : 2);
         const size_t shown = std::min<size_t>(
             std::min<size_t>(bookmarks.size(), 6),
             static_cast<size_t>(std::max(0, room)));
-        if (shown == 0) return;
-        state.homeBookmarksShown = true;
-        Center(state, topRow, L"ЗАКЛАДКИ", kMuted);
-        for (size_t i = 0; i < shown; ++i) {
-            const int y = topRow + 1 + static_cast<int>(i);
-            // Compact display: strip scheme for readability.
-            std::wstring label = bookmarks[i];
-            const size_t schemeEnd = label.find(L"://");
-            if (schemeEnd != std::wstring::npos)
-                label = label.substr(schemeEnd + 3);
-            label = Shorten(label, 48);
-            At(state, std::max(2, (state.width - 50) / 2), y,
-               L"  ★ " + label, kAccent, 50);
-            state.bookmarkHits.push_back(
-                {y, std::max(2, (state.width - 50) / 2),
-                 std::max(2, (state.width - 50) / 2) + 52,
-                 static_cast<int>(i)});
+        int y = topRow;
+        if (shown > 0) {
+            state.homeBookmarksShown = true;
+            Center(state, y, L"ЗАКЛАДКИ", kMuted);
+            ++y;
+            for (size_t i = 0; i < shown; ++i, ++y) {
+                // Compact display: strip scheme for readability.
+                std::wstring label = bookmarks[i];
+                const size_t schemeEnd = label.find(L"://");
+                if (schemeEnd != std::wstring::npos)
+                    label = label.substr(schemeEnd + 3);
+                label = Shorten(label, 48);
+                At(state, std::max(2, (state.width - 50) / 2), y,
+                   L"  ★ " + label, kAccent, 50);
+                state.bookmarkHits.push_back(
+                    {y, std::max(2, (state.width - 50) / 2),
+                     std::max(2, (state.width - 50) / 2) + 52,
+                     static_cast<int>(i)});
+            }
+        }
+        if (!recent.empty()) {
+            ++y;
+            Center(state, y, L"НЕДАВНО", kMuted);
+            ++y;
+            std::wstring line = L"  ";
+            for (size_t i = 0; i < recent.size(); ++i) {
+                std::wstring u = recent[i];
+                const size_t se = u.find(L"://");
+                if (se != std::wstring::npos) u = u.substr(se + 3);
+                u = Shorten(u, 40);
+                if (i) line += L"   ·   ";
+                line += u;
+            }
+            Center(state, y, line, kMuted);
         }
     }
 
@@ -1041,8 +1096,86 @@ namespace console_ui {
         g_consoleStatus = L"Строка выделена — c / Ctrl+C копирует.";
     }
 
-    // End a drag: tiny movement = plain click (dispatch it), otherwise
-    // commit the rectangle as the screen selection.
+    // Tiny arithmetic evaluator for `calc`: + - * / % ^, parentheses,
+    // unary minus. Returns NaN on parse error.
+    struct CalcParser {
+        const std::string& s; size_t p = 0;
+        explicit CalcParser(const std::string& str) : s(str) {}
+        void ws() { while (p < s.size() && isspace((unsigned char)s[p])) ++p; }
+        bool eat(char c) { ws(); if (p < s.size() && s[p] == c) { ++p; return true; } return false; }
+        double expr() {
+            double v = term();
+            for (;;) {
+                if (eat('+')) v += term();
+                else if (eat('-')) v -= term();
+                else return v;
+            }
+        }
+        double term() {
+            double v = factor();
+            for (;;) {
+                if (eat('*')) v *= factor();
+                else if (eat('/')) { const double d = factor(); v = d == 0 ? NAN : v / d; }
+                else if (eat('%')) { const double d = factor(); v = d == 0 ? NAN : std::fmod(v, d); }
+                else return v;
+            }
+        }
+        double factor() {
+            ws();
+            if (eat('+')) return factor();
+            if (eat('-')) return -factor();
+            if (eat('(')) { const double v = expr(); if (!eat(')')) return NAN; return v; }
+            ws();
+            const size_t st = p;
+            while (p < s.size() && (isdigit((unsigned char)s[p]) || s[p] == '.')) ++p;
+            if (p == st) return NAN;
+            double v = std::strtod(s.c_str() + st, nullptr);
+            if (eat('^')) v = std::pow(v, factor());
+            return v;
+        }
+    };
+    double EvalCalc(const std::string& expr) {
+        if (expr.empty()) return NAN;
+        CalcParser cp(expr);
+        const double v = cp.expr();
+        cp.ws();
+        return cp.p == expr.size() ? v : NAN;
+    }
+
+    // Fire a deferred click: Ctrl+click opens the link/image under the
+    // cursor in a new tab, otherwise normal click dispatch.
+    void DispatchPendingClick(State& state) {
+        if (!state.pendingClickValid) return;
+        state.pendingClickValid = false;
+        const int x = state.pendingClickX;
+        const int y = state.pendingClickY;
+        if (state.pendingClickCtrl) {
+            for (const auto& row : state.itemRows) {
+                if (y == row.row) {
+                    std::wstring target;
+                    if (static_cast<size_t>(row.item) < g_currentLinks.size())
+                        target = g_currentLinks[
+                            static_cast<size_t>(row.item)].url;
+                    else {
+                        const int img = ImageIndexForItem(state, row.item);
+                        if (img >= 0)
+                            target = g_currentImages[
+                                static_cast<size_t>(img)].url;
+                    }
+                    if (!target.empty() &&
+                        target.rfind(L"openfile://", 0) != 0)
+                        ApplyView(state, UiOpenInNewTab(target,
+                                                        CurrentView(state)));
+                    return;
+                }
+            }
+            return; // Ctrl+click on empty space does nothing
+        }
+        HandleLeftClick(state, x, y);
+    }
+
+    // End a drag: tiny movement = plain click (deferred for multi-click
+    // detection), otherwise commit the rectangle as screen selection.
     void FinishScreenSel(State& state, int ex, int ey) {
         state.selEX = ex;
         state.selEY = ey;
@@ -1052,68 +1185,22 @@ namespace console_ui {
         // Jitter under ~3 cells is a click, not a selection — otherwise
         // every ordinary click would "select" a couple of characters.
         if (ddx + ddy <= 3) {
-            // Double-click selects the word, triple-click the line —
-            // like a browser/terminal. Single click still dispatches.
-            const auto now = Clock::now();
-            const bool sameSpot = state.lastClickX >= 0 &&
-                std::abs(ex - state.lastClickX) <= 1 &&
-                std::abs(ey - state.lastClickY) <= 1 &&
-                now - state.lastClickTime < std::chrono::milliseconds(600);
-            state.clickCount = sameSpot ? state.clickCount + 1 : 1;
-            state.lastClickX = ex; state.lastClickY = ey;
-            state.lastClickTime = now;
-            if (state.clickCount == 2) {
-                SelectWordAt(state, ex, ey);
-                state.clickCount = 0;
-                return;
+            // Multi-click presses are consumed on press (word/line
+            // selection); only a genuine first click gets deferred.
+            if (state.clickCount <= 1) {
+                state.pendingClickValid = true;
+                state.pendingClickX = state.selSX;
+                state.pendingClickY = state.selSY;
+                state.pendingClickCtrl = state.clickCtrl;
+                state.pendingClickTime = Clock::now();
             }
-            if (state.clickCount >= 3) {
-                SelectLineAt(state, ey);
-                state.clickCount = 0;
-                return;
-            }
-            HandleLeftClick(state, state.selSX, state.selSY);
         } else {
             state.ssX1 = std::min(state.selSX, ex);
             state.ssY1 = std::min(state.selSY, ey);
             state.ssX2 = std::max(state.selSX, ex);
             state.ssY2 = std::max(state.selSY, ey);
-            // A drag touching the page-content area also anchors a
-            // page-line selection: scrolling clears the screen rectangle
-            // but the page selection re-anchors to the text, so the
-            // selection survives scrolling (copy falls back to whole
-            // lines — the precise rectangle stays available until then).
-            const int contentTop = 6;
-            const int cap = state.pageCapacity > 0
-                ? state.pageCapacity : state.height - 9;
-            const int cLast = contentTop + std::max(1, cap) - 1;
-            // Both drag endpoints may sit on different scroll offsets
-            // (auto-scroll moved the page mid-drag) — anchor each to the
-            // offset that was active when its row was captured.
-            const bool touchA = state.selSY >= contentTop &&
-                                state.selSY <= cLast;
-            const bool touchB = state.selEY >= contentTop &&
-                                state.selEY <= cLast;
-            if (g_consolePageOpen && state.pageLineCount > 0 &&
-                (touchA || touchB)) {
-                const long lineA = touchA
-                    ? static_cast<long>(state.selStartScroll) +
-                      (state.selSY - contentTop) : -1;
-                const long lineB = touchB
-                    ? static_cast<long>(state.scrollOffset) +
-                      (state.selEY - contentTop) : -1;
-                long lo, hi;
-                if (lineA >= 0 && lineB >= 0) {
-                    lo = std::min(lineA, lineB);
-                    hi = std::max(lineA, lineB);
-                } else if (lineA >= 0) { lo = hi = lineA; }
-                else { lo = hi = lineB; }
-                const long maxLine = static_cast<long>(state.pageLineCount) - 1;
-                state.selAnchor = std::clamp(lo, 0L, maxLine);
-                state.selCursor = std::clamp(hi, 0L, maxLine);
-                state.selectMode = false;
-            }
             state.screenSelValid = true;
+            state.clickCount = 0; // a drag is not a click streak
             g_consoleStatus = L"Выделено — c / Ctrl+C копирует.";
         }
     }
@@ -1292,7 +1379,13 @@ namespace console_ui {
                     L"reopen", L"clear-history", L"export", L"import",
                     L"bookmarks-clear", L"cache-clear", L"edge", L"web",
                     L"sync", L"stop", L"pause", L"exit",
-                    L"help", L"open", L"search", L"download", L"terminal" };
+                    L"help", L"open", L"search", L"download", L"terminal",
+                    L"about", L"notes", L"note", L"cache", L"ip",
+                    L"define", L"dict", L"tr", L"translate", L"timer",
+                    L"pass", L"uuid", L"guid", L"calc", L"feedback",
+                    L"repo", L"site", L"w", L"wiki", L"scroll",
+                    L"title", L"links", L"mdlink", L"words",
+                    L"readtime", L"ver", L"version" };
                 const std::wstring low = LowerWide(in);
                 std::vector<std::wstring> cmds;
                 for (const wchar_t* c : kCmds) {
@@ -1653,6 +1746,22 @@ namespace console_ui {
                 status += L"Загрузка… " + FormatBytes(got);
                 if (total > 0)
                     status += L" / " + FormatBytes(total);
+                // Speed + ETA once we have at least a second of data.
+                const auto elapsed = std::chrono::duration_cast<
+                    std::chrono::milliseconds>(Clock::now() - g_loadStart);
+                if (elapsed.count() >= 800 && got > 0) {
+                    const double sec = elapsed.count() / 1000.0;
+                    const double speed = got / sec;
+                    status += L" · " + FormatBytes(
+                        static_cast<uint64_t>(speed)) + L"/с";
+                    if (total > got) {
+                        const double eta = (total - got) / speed;
+                        if (eta < 3600)
+                            status += L" · ~" +
+                                std::to_wstring(static_cast<int>(eta) + 1) +
+                                L"с";
+                    }
+                }
                 status += L"   Esc — отмена   " + prev;
             }
             else if (state.editingField >= 0) {
@@ -1689,11 +1798,51 @@ namespace console_ui {
                 }
             }
             if (g_downloadRunning.load()) {
-                std::wstring dl = L"⇩ " + FormatBytes(TotalDownloadProgress());
+                const uint64_t dlNow = TotalDownloadProgress();
+                const auto dlNowT = Clock::now();
+                std::wstring dl = L"⇩ " + FormatBytes(dlNow);
+                // Speed: bytes delta over the sampling window.
+                if (state.dlPrevTime.time_since_epoch().count() != 0) {
+                    const double dt = std::chrono::duration_cast<
+                        std::chrono::milliseconds>(dlNowT - state.dlPrevTime)
+                        .count() / 1000.0;
+                    if (dt > 0.3) {
+                        const double spd =
+                            static_cast<double>(dlNow - state.dlPrevBytes) / dt;
+                        if (spd > 0)
+                            dl += L" · " + FormatBytes(
+                                static_cast<uint64_t>(spd)) + L"/с";
+                    }
+                }
+                state.dlPrevBytes = dlNow;
+                state.dlPrevTime = dlNowT;
                 const size_t pending = PendingDownloadCount();
                 if (pending > 0)
                     dl += L" (+" + std::to_wstring(pending) + L" в очереди)";
                 status = dl + L"   " + status;
+            } else {
+                state.dlPrevTime = Clock::time_point{};
+            }
+            // Countdown timer prefix + wall clock on the footer row.
+            if (!state.timerLabel.empty() &&
+                Clock::now() < state.timerEnd) {
+                const auto rem = std::chrono::duration_cast<
+                    std::chrono::seconds>(state.timerEnd - Clock::now())
+                    .count();
+                const long rr = static_cast<long>(rem);
+                wchar_t tb[32];
+                std::swprintf(tb, 32, L"%02ld:%02ld",
+                              rr / 60, rr % 60);
+                status = L"⏱ " + state.timerLabel + L" " + tb +
+                    L"   " + status;
+            }
+            {
+                const std::time_t now = std::time(nullptr);
+                std::tm tmv{};
+                localtime_s(&tmv, &now);
+                wchar_t cb[8];
+                std::swprintf(cb, 8, L"%02d:%02d", tmv.tm_hour, tmv.tm_min);
+                At(state, std::max(2, width - 7), height - 2, cb, kMuted);
             }
             At(state, 2, height - 3,
                Shorten(status, static_cast<size_t>(width - 4)),
@@ -2177,6 +2326,19 @@ namespace console_ui {
             return;
         }
 
+        // On the notes page the omnibox appends a line to data/notes.txt.
+        if (g_currentUrl == std::wstring(kInternalPrefix) + L"notes") {
+            const std::wstring t = TrimWide(value);
+            if (t.empty() || LowerWide(t) == L"exit" || LowerWide(t) == L"back") {
+                ActivateAction(state, NavAction::Back);
+                return;
+            }
+            UiAddNote(t);
+            UiOpenInternalPage(L"notes"); // refresh the page
+            g_consoleStatus = L"Заметка добавлена.";
+            return;
+        }
+
         // Field editing: Enter commits the value into the form field.
         if (state.editingField >= 0) {
             if (static_cast<size_t>(state.editingField) < g_currentFields.size()) {
@@ -2225,6 +2387,13 @@ namespace console_ui {
             return;
         }
         if (lower == L"home" || lower == L"главная") {
+            // Custom homepage ("home <url>") wins over the start page.
+            const std::wstring hp = UiHomepage();
+            if (!hp.empty()) {
+                UiOpenUrl(hp);
+                state.focus = Focus::Page;
+                return;
+            }
             UiCancelLoad();
             g_consolePageOpen = false;
             g_consoleStatus.clear();
@@ -2412,6 +2581,231 @@ namespace console_ui {
                 } catch (...) { g_consoleStatus = L"Неверный номер ссылки."; }
                 return;
             }
+        }
+
+        // --- commands batch 2 ---
+        if (lower.rfind(L"tab ", 0) == 0) {
+            try {
+                const int n = std::stoi(ToUtf8(TrimWide(value.substr(4))));
+                const size_t count = UiTabCount();
+                if (n >= 1 && static_cast<size_t>(n) <= count)
+                    ApplyView(state, UiSwitchTabTo(
+                        static_cast<size_t>(n) - 1, CurrentView(state)));
+                else g_consoleStatus = L"Нет такой вкладки.";
+            } catch (...) { g_consoleStatus = L"Формат: tab <номер>"; }
+            return;
+        }
+        if (lower == L"close-others" || lower == L"closeothers") {
+            UiCloseOtherTabs(CurrentView(state));
+            return;
+        }
+        if (lower == L"update") {
+            // Force an update check now: drop the daily stamp and reschedule.
+            std::error_code ec;
+            fs::remove(DataDirPath() / L"update_check.txt", ec);
+            UiScheduleUpdateCheck();
+            g_consoleStatus = L"Проверяю обновления…";
+            return;
+        }
+        if (lower == L"about") { UiOpenInternalPage(L"about"); state.focus = Focus::Page; return; }
+        if (lower == L"notes") { UiOpenInternalPage(L"notes"); state.focus = Focus::Page; return; }
+        if (lower == L"cache") { UiOpenInternalPage(L"cache"); state.focus = Focus::Page; return; }
+        if (lower == L"ip") { UiOpenInternalPage(L"ip"); state.focus = Focus::Page; return; }
+        if (lower == L"feedback") {
+            UiShellOpen(L"https://github.com/fanxcz/browser/issues");
+            g_consoleStatus = L"Открыто в браузере.";
+            return;
+        }
+        if (lower == L"repo") {
+            UiShellOpen(L"https://github.com/fanxcz/browser");
+            g_consoleStatus = L"Открыто в браузере.";
+            return;
+        }
+        if (lower == L"site") {
+            UiShellOpen(L"https://fanxcz.github.io/browser/");
+            g_consoleStatus = L"Открыто в браузере.";
+            return;
+        }
+        if (lower.rfind(L"pass ", 0) == 0 || lower == L"pass") {
+            int len = 16;
+            if (lower.size() > 5) {
+                try { len = std::stoi(ToUtf8(TrimWide(value.substr(5)))); }
+                catch (...) {}
+            }
+            len = std::clamp(len, 4, 64);
+            static const char kSet[] =
+                "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ"
+                "23456789!@#$%&*+-=?";
+            std::random_device rd;
+            std::mt19937_64 rng(rd());
+            std::string pw;
+            for (int i = 0; i < len; ++i)
+                pw += kSet[rng() % (sizeof(kSet) - 1)];
+            UiCopyToClipboard(ToWide(pw));
+            g_consoleStatus = L"Пароль скопирован в буфер: " + ToWide(pw);
+            return;
+        }
+        if (lower == L"uuid" || lower == L"guid") {
+            std::random_device rd;
+            std::mt19937_64 rng(rd());
+            auto hx = [&]() { return static_cast<int>(rng() & 0xFFFF); };
+            wchar_t buf[40];
+            std::swprintf(buf, 40, L"%04X-%04X-%04X-%04X-%04X%04X%04X",
+                          hx(), hx(), hx() & 0x0FFF | 0x4000,
+                          hx() & 0x3FFF | 0x8000, hx(), hx(), hx());
+            UiCopyToClipboard(buf);
+            g_consoleStatus = std::wstring(L"UUID скопирован: ") + buf;
+            return;
+        }
+        if (lower.rfind(L"calc ", 0) == 0 || lower == L"calc") {
+            const std::string expr = ToUtf8(TrimWide(
+                value.size() > 5 ? value.substr(5) : L""));
+            const double result = EvalCalc(expr);
+            if (std::isnan(result)) {
+                g_consoleStatus =
+                    L"Калькулятор: calc <выражение>  (+ - * / % ^ ())";
+            } else {
+                wchar_t buf[64];
+                std::swprintf(buf, 64, L"%.10g", result);
+                g_consoleStatus = std::wstring(L"= ") + buf;
+                UiCopyToClipboard(buf);
+            }
+            return;
+        }
+        if (lower.rfind(L"timer ", 0) == 0) {
+            // timer 30s / 5m / 1h — countdown shown in the status bar.
+            const std::string spec = ToUtf8(TrimWide(value.substr(6)));
+            char unit = 's';
+            double num = 0;
+            if (sscanf(spec.c_str(), "%lf%c", &num, &unit) >= 1 && num > 0) {
+                const double mult = unit == 'h' || unit == 'H' ? 3600
+                    : unit == 'm' || unit == 'M' ? 60 : 1;
+                const int secs = static_cast<int>(num * mult);
+                if (secs > 0 && secs <= 86400) {
+                    state.timerEnd = Clock::now() +
+                        std::chrono::seconds(secs);
+                    state.timerLabel = L"Таймер " +
+                        std::to_wstring(secs) + L" с";
+                    g_consoleStatus = state.timerLabel + L" — пошёл!";
+                    return;
+                }
+            }
+            g_consoleStatus = L"Формат: timer <число><s|m|h>";
+            return;
+        }
+        if (lower.rfind(L"note ", 0) == 0) {
+            UiAddNote(TrimWide(value.substr(5)));
+            g_consoleStatus = L"Заметка сохранена (data/notes.txt).";
+            return;
+        }
+        if (lower.rfind(L"define ", 0) == 0 || lower.rfind(L"dict ", 0) == 0) {
+            const size_t off = lower.rfind(L"define ", 0) == 0 ? 7 : 5;
+            const std::string word = UrlEncode(
+                ToUtf8(TrimWide(value.substr(off))));
+            UiOpenInternalPage(L"define/" + ToWide(word));
+            state.focus = Focus::Page;
+            return;
+        }
+        if (lower.rfind(L"translate ", 0) == 0 ||
+            lower.rfind(L"tr ", 0) == 0) {
+            const size_t off = lower.rfind(L"translate ", 0) == 0 ? 10 : 3;
+            const std::string text = UrlEncode(
+                ToUtf8(TrimWide(value.substr(off))));
+            UiOpenInternalPage(L"tr/" + ToWide(text));
+            state.focus = Focus::Page;
+            return;
+        }
+        if (lower.rfind(L"w ", 0) == 0 || lower.rfind(L"wiki ", 0) == 0) {
+            const size_t off = lower.rfind(L"w ", 0) == 0 ? 2 : 5;
+            UiOpenUrl(L"https://ru.wikipedia.org/wiki/Special:Search?search=" +
+                      ToWide(UrlEncode(ToUtf8(TrimWide(value.substr(off))))));
+            return;
+        }
+        if (lower == L"!" ) { g_consoleStatus = L"Формат: !<команда Windows>"; return; }
+        if (!value.empty() && value.front() == L'!') {
+            // !cmd — run a Windows command and show output on the terminal page.
+            const std::wstring cmd = TrimWide(value.substr(1));
+            if (!cmd.empty()) {
+                UiOpenTerminal();
+                UiTerminalRun(cmd);
+                state.focus = Focus::Page;
+                return;
+            }
+        }
+        if (lower.rfind(L"home ", 0) == 0) {
+            // home <url> — set a custom homepage (persisted).
+            const std::wstring hp = TrimWide(value.substr(5));
+            if (hp.empty()) {
+                UiSetSetting(L"home", L"");
+                g_consoleStatus = L"Главная страница сброшена.";
+            } else {
+                UiSetSetting(L"home", hp);
+                g_consoleStatus = L"Главная страница: " + hp;
+            }
+            return;
+        }
+        if (lower.rfind(L"scroll ", 0) == 0) {
+            try {
+                const int n = std::stoi(ToUtf8(TrimWide(value.substr(7))));
+                if (n >= 1 && n <= 20) {
+                    g_scrollLines = n;
+                    g_consoleStatus = L"Скорость прокрутки: " +
+                        std::to_wstring(n) + L" строк/щелчок.";
+                } else g_consoleStatus = L"Диапазон: 1..20";
+            } catch (...) { g_consoleStatus = L"Формат: scroll <1-20>"; }
+            return;
+        }
+        if (lower == L"title") {
+            if (g_currentTitle.empty()) {
+                g_consoleStatus = L"У страницы нет заголовка.";
+            } else {
+                UiCopyToClipboard(ToWide(g_currentTitle));
+                g_consoleStatus = L"Заголовок скопирован: " +
+                    ToWide(g_currentTitle);
+            }
+            return;
+        }
+        if (lower == L"links") {
+            if (g_currentLinks.empty()) {
+                g_consoleStatus = L"На странице нет ссылок.";
+            } else {
+                std::wstring all;
+                for (const auto& l : g_currentLinks) {
+                    if (!all.empty()) all += L"\r\n";
+                    all += l.url;
+                }
+                UiCopyToClipboard(all);
+                g_consoleStatus = L"Ссылки скопированы: " +
+                    std::to_wstring(g_currentLinks.size()) + L" шт.";
+            }
+            return;
+        }
+        if (lower == L"mdlink") {
+            // Copy hovered/selected link as Markdown [label](url).
+            int idx = state.hoveredItem >= 0 ? state.hoveredItem
+                                            : state.selectedItem;
+            if (idx >= 0 && static_cast<size_t>(idx) < g_currentLinks.size()) {
+                const auto& l = g_currentLinks[static_cast<size_t>(idx)];
+                UiCopyToClipboard(L"[" + ToWide(l.label) + L"](" +
+                                  l.url + L")");
+                g_consoleStatus = L"Markdown-ссылка скопирована.";
+            } else g_consoleStatus = L"Наведите мышь на ссылку.";
+            return;
+        }
+        if (lower == L"words" || lower == L"readtime") {
+            // Word count + rough reading time of the page text.
+            const std::wstring t = g_consolePageOpen
+                ? ToWide(g_currentText) : L"";
+            size_t words = 0;
+            bool inWord = false;
+            for (wchar_t ch : t) {
+                if (std::iswalnum(ch)) { if (!inWord) { ++words; inWord = true; } }
+                else inWord = false;
+            }
+            const int mins = std::max(1, static_cast<int>(words / 200));
+            g_consoleStatus = L"Слов: " + std::to_wstring(words) +
+                L" · чтение ~" + std::to_wstring(mins) + L" мин";
+            return;
         }
 
         state.scrollOffset = 0;
@@ -3343,9 +3737,10 @@ namespace console_ui {
                 return;
             }
             const size_t notches = static_cast<size_t>(std::max(1, std::abs(static_cast<int>(delta)) / WHEEL_DELTA));
-            // Density: compact scrolls further per notch, spacious less.
-            const size_t step = notches *
-                (g_density == 0 ? 5 : g_density == 2 ? 2 : 3);
+            // Density scales the base step; `scroll <n>` overrides it.
+            const size_t base = g_scrollLines > 0 ? static_cast<size_t>(g_scrollLines)
+                : static_cast<size_t>(g_density == 0 ? 5 : g_density == 2 ? 2 : 3);
+            const size_t step = notches * base;
             const size_t maxOffset = state.pageLineCount > static_cast<size_t>(state.pageCapacity)
                 ? state.pageLineCount - static_cast<size_t>(state.pageCapacity) : 0;
             if (delta > 0)
@@ -3492,12 +3887,48 @@ namespace console_ui {
         }
         if (!isClick) return;
 
+        // A press somewhere else (or long after) flushes a pending click
+        // immediately so fast click-click sequences don't lose the first.
+        if (state.pendingClickValid &&
+            (std::abs(x - state.pendingClickX) > 1 ||
+             std::abs(y - state.pendingClickY) > 1 ||
+             Clock::now() - state.pendingClickTime >
+                 std::chrono::milliseconds(500)))
+            DispatchPendingClick(state);
+
+        // Multi-click streak: a press within 500 ms of the previous one
+        // at ~the same cell counts up. 2nd = word, 3rd+ = line. The
+        // press is consumed (no drag) and the deferred single click from
+        // the previous release is cancelled.
+        {
+            const auto now = Clock::now();
+            const bool sameSpot = state.lastClickX >= 0 &&
+                std::abs(x - state.lastClickX) <= 1 &&
+                std::abs(y - state.lastClickY) <= 1 &&
+                now - state.lastClickTime < std::chrono::milliseconds(500);
+            state.clickCount = sameSpot ? state.clickCount + 1 : 1;
+            state.lastClickX = x; state.lastClickY = y;
+            state.lastClickTime = now;
+            if (state.clickCount >= 2) {
+                state.pendingClickValid = false;
+                if (state.clickCount == 2) SelectWordAt(state, x, y);
+                else SelectLineAt(state, y);
+                state.screenSelValid = true;
+                g_consoleStatus = L"Выделено — c / Ctrl+C копирует.";
+                state.focus = Focus::Page;
+                return;
+            }
+        }
+
         // Left press arms a potential drag; the click itself is dispatched
-        // on release so dragging never triggers links or buttons.
+        // on release (deferred ~250 ms) so dragging never triggers links
+        // or buttons, and double-clicks never fire the first click.
         state.mouseSelDown = true;
         state.selSX = state.selEX = x;
         state.selSY = state.selEY = y;
         state.selStartScroll = state.scrollOffset;
+        state.clickCtrl = (mouse.dwControlKeyState &
+            (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED)) != 0;
         state.screenSelValid = false;
         state.focus = Focus::Page;
         return;
@@ -3652,9 +4083,16 @@ namespace console_ui {
         Render(state);
 
         auto lastAnim = Clock::now();
+        size_t dlPendingPrev = SIZE_MAX; // download-finish beep tracker
         while (running) {
             // Commit any finished background load and pick up queued jobs.
             const bool loadChanged = PollAsyncLoad();
+            // Beep once when the last queued/running download finishes.
+            const size_t dlPend = PendingDownloadCount();
+            if (dlPendingPrev != SIZE_MAX && dlPendingPrev > 0 &&
+                dlPend == 0)
+                Beep(1400, 90);
+            dlPendingPrev = dlPend;
             // One-shot notice from the background update check.
             const std::wstring upd = UiTakeUpdateNotice();
             if (!upd.empty()) g_consoleStatus = upd;
@@ -3664,6 +4102,26 @@ namespace console_ui {
                 Clock::now() - lastAnim > std::chrono::milliseconds(400)) {
                 lastAnim = Clock::now();
                 animTick = true;
+            }
+            // Deferred single click: fire ~250 ms after release unless a
+            // second press promoted it to word/line selection.
+            if (state.pendingClickValid &&
+                Clock::now() - state.pendingClickTime >
+                    std::chrono::milliseconds(250)) {
+                DispatchPendingClick(state);
+                animTick = true;
+            }
+            // Countdown timer: tick ~2×/s while armed, fire on expiry.
+            if (!state.timerLabel.empty()) {
+                if (Clock::now() >= state.timerEnd) {
+                    g_consoleStatus = state.timerLabel + L" — время вышло!";
+                    state.timerLabel.clear();
+                    animTick = true;
+                } else if (Clock::now() - lastAnim >
+                           std::chrono::milliseconds(500)) {
+                    lastAnim = Clock::now();
+                    animTick = true;
+                }
             }
 
             // If a new page arrived, reset scroll/selection state.

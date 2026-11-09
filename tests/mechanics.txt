@@ -145,6 +145,69 @@ expect Переключить тему
 key esc
 wait 300
 
+# --- new utilities: uuid copies to clipboard ---
+key ctrl+l
+wait 300
+text uuid
+wait 200
+key enter
+wait 600
+expectclip -
+
+# --- calc shows result in status bar ---
+key ctrl+l
+wait 300
+text calc 6*7
+wait 200
+key enter
+wait 600
+expect = 42
+
+# --- timer arms countdown ---
+key ctrl+l
+wait 300
+text timer 30s
+wait 200
+key enter
+wait 800
+expect Таймер
+
+# --- notes page ---
+key ctrl+l
+wait 300
+text notes
+wait 200
+key enter
+wait 2000
+expect Заметки
+key alt+left
+wait 1500
+
+# --- about page ---
+key ctrl+l
+wait 300
+text about
+wait 200
+key enter
+wait 3500
+dump build/Release/about_page.txt
+expect Браузер
+key alt+left
+wait 1500
+
+# --- double-click selects a word on the page (row 8 = heading area) ---
+dblclick 12 8
+wait 400
+key ctrl+c
+wait 300
+expectclip Exa
+
+# --- single click on empty area does NOT select/navigate ---
+down 5 20
+up 5 20
+wait 300
+expect Example Domain
+
 dump build/Release/final_screen.txt
 shot build/Release/final.png
 echo DONE

@@ -90,7 +90,13 @@ static string ToUtf8(const wstring& w) {
     return s;
 }
 static wstring LowerWide(wstring s) {
-    for (auto& c : s) c = (wchar_t)towlower(c);
+    for (auto& c : s) {
+        // towlower() is locale-bound and leaves Cyrillic untouched in
+        // the C locale — fold ASCII and Cyrillic manually instead.
+        if (c >= L'A' && c <= L'Z') c = (wchar_t)(c - L'A' + L'a');
+        else if (c >= 0x0410 && c <= 0x042F) c = (wchar_t)(c + 0x20);
+        else c = (wchar_t)towlower(c);
+    }
     return s;
 }
 static string Trim(const string& s) {
