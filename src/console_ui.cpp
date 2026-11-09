@@ -303,13 +303,18 @@ namespace console_ui {
         // Text selection: absolute page-line range. Set by mouse drag over
         // plain text, or by V-mode where j/k move the cursor and y copies.
         bool selectMode = false;
-        bool selDragging = false;
         long selAnchor = -1;
         long selCursor = -1;
         std::vector<std::wstring> selLines;
         // Omnibox text selection (Ctrl+A, Shift+arrows later); anchor is the
         // fixed end, caret is the moving end.
         long inputSelAnchor = -1;
+        // Terminal-style screen selection: drag over ANY cells (links,
+        // status bar, tabs — everything), release keeps the highlight.
+        bool mouseSelDown = false;
+        int selSX = 0, selSY = 0, selEX = 0, selEY = 0;
+        bool screenSelValid = false;
+        int ssX1 = 0, ssY1 = 0, ssX2 = 0, ssY2 = 0;
         // <meta http-equiv="refresh"> auto-reload timer.
         int refreshSeconds = 0;
         int refreshInterval = 0;   // >0: repeating interval (reload N)
@@ -846,7 +851,6 @@ namespace console_ui {
 
     void ClearSelection(State& state) {
         state.selectMode = false;
-        state.selDragging = false;
         state.selAnchor = -1;
         state.selCursor = -1;
         state.selLines.clear();
@@ -895,7 +899,19 @@ namespace console_ui {
         return out;
     }
 
+    std::wstring ScreenSelectionText(const State& state); // defined below
+
     void CopySelectionOrUrl(State& state) {
+        // 1) Terminal-style screen selection (any dragged cells).
+        const std::wstring screen = TrimWide(ScreenSelectionText(state));
+        if (!screen.empty()) {
+            if (UiCopyToClipboard(screen)) {
+                g_consoleStatus = L"Выделенный текст скопирован (" +
+                    std::to_wstring(screen.size()) + L" симв.).";
+                return;
+            }
+        }
+        // 2) Page-line selection (V-mode).
         const std::wstring sel = SelectedText(state);
         if (!sel.empty()) {
             if (UiCopyToClipboard(sel)) {
@@ -921,6 +937,90 @@ namespace console_ui {
             g_consoleStatus = L"Ссылка скопирована в буфер обмена.";
         else
             g_consoleStatus = L"Нечего копировать.";
+    }
+
+    void HandleLeftClick(State& state, int x, int y); // defined below
+
+    // End a drag: tiny movement = plain click (dispatch it), otherwise
+    // commit the rectangle as the screen selection.
+    void FinishScreenSel(State& state, int ex, int ey) {
+        state.selEX = ex;
+        state.selEY = ey;
+        state.mouseSelDown = false;
+        const int ddx = std::abs(ex - state.selSX);
+        const int ddy = std::abs(ey - state.selSY);
+        if (ddx + ddy <= 1) {
+            HandleLeftClick(state, state.selSX, state.selSY);
+        } else {
+            state.ssX1 = std::min(state.selSX, ex);
+            state.ssY1 = std::min(state.selSY, ey);
+            state.ssX2 = std::max(state.selSX, ex);
+            state.ssY2 = std::max(state.selSY, ey);
+            state.screenSelValid = true;
+            g_consoleStatus = L"Выделено — c / Ctrl+C копирует.";
+        }
+    }
+
+    // Read the committed screen-selection rectangle straight from the
+    // console buffer — works over links, buttons, status bar, everything.
+    std::wstring ScreenSelectionText(const State& state) {
+        if (!state.screenSelValid) return {};
+        const int x1 = std::min(state.ssX1, state.ssX2);
+        const int x2 = std::max(state.ssX1, state.ssX2);
+        const int y1 = std::min(state.ssY1, state.ssY2);
+        const int y2 = std::max(state.ssY1, state.ssY2);
+        std::wstring out;
+        for (int y = y1; y <= y2; ++y) {
+            const int w = x2 - x1 + 1;
+            if (w <= 0) continue;
+            std::wstring buf(static_cast<size_t>(w), L' ');
+            const COORD pos{static_cast<SHORT>(state.left + x1),
+                            static_cast<SHORT>(state.top + y)};
+            DWORD rd = 0;
+            ReadConsoleOutputCharacterW(state.output, buf.data(),
+                                        static_cast<DWORD>(w), pos, &rd);
+            size_t end = buf.size();
+            while (end > 0 && buf[end - 1] == L' ') --end;
+            buf.resize(end);
+            if (!out.empty()) out += L'\n';
+            out += buf;
+        }
+        return out;
+    }
+
+    // Repaint the selection rectangle with the selection attribute —
+    // reads the freshly drawn frame back from the buffer, so it overlays
+    // links, fields, status bar and tabs alike.
+    void DrawScreenSelection(State& state) {
+        int x1, y1, x2, y2;
+        if (state.mouseSelDown) {
+            x1 = std::min(state.selSX, state.selEX);
+            x2 = std::max(state.selSX, state.selEX);
+            y1 = std::min(state.selSY, state.selEY);
+            y2 = std::max(state.selSY, state.selEY);
+        } else if (state.screenSelValid) {
+            x1 = std::min(state.ssX1, state.ssX2);
+            x2 = std::max(state.ssX1, state.ssX2);
+            y1 = std::min(state.ssY1, state.ssY2);
+            y2 = std::max(state.ssY1, state.ssY2);
+        } else {
+            return;
+        }
+        x1 = std::clamp(x1, 0, state.width - 1);
+        x2 = std::clamp(x2, 0, state.width - 1);
+        y1 = std::clamp(y1, 0, state.height - 1);
+        y2 = std::clamp(y2, 0, state.height - 1);
+        if (x1 == x2 && y1 == y2) return;
+        for (int y = y1; y <= y2; ++y) {
+            const int w = x2 - x1 + 1;
+            std::wstring buf(static_cast<size_t>(w), L' ');
+            const COORD pos{static_cast<SHORT>(state.left + x1),
+                            static_cast<SHORT>(state.top + y)};
+            DWORD rd = 0;
+            ReadConsoleOutputCharacterW(state.output, buf.data(),
+                                        static_cast<DWORD>(w), pos, &rd);
+            At(state, x1, y, buf, kSelected, w);
+        }
     }
 
     void Render(State& state) {
@@ -1382,6 +1482,7 @@ namespace console_ui {
         // Autocomplete dropdown paints last so it overlays page content.
         DrawSuggestions(state);
         DrawSettingsMenu(state);
+        DrawScreenSelection(state); // terminal-style highlight on top
 
         const int cursorX = std::clamp(
             state.searchLeft + static_cast<int>(state.caret -
@@ -2232,6 +2333,22 @@ namespace console_ui {
                 g_consoleStatus = L"На странице нет текста.";
             return;
         }
+        if (ctrl && !shift && code == VK_INSERT) { // Ctrl+Ins = copy
+            CopySelectionOrUrl(state);
+            return;
+        }
+        if (shift && !ctrl && code == VK_INSERT &&
+            state.focus == Focus::Search) { // Shift+Ins = paste
+            const std::wstring clip = UiGetClipboardText();
+            if (!clip.empty()) {
+                DeleteInputSel(state);
+                state.input.insert(state.caret, clip);
+                state.caret += clip.size();
+                state.browsingHistory = false;
+                state.suggestIndex = -1;
+            }
+            return;
+        }
         if (ctrl && code == 'V' && state.focus == Focus::Search) {
             // Paste clipboard text into the omnibox at the caret.
             const std::wstring clip = UiGetClipboardText();
@@ -2993,16 +3110,14 @@ namespace console_ui {
             (mouse.dwButtonState & FROM_LEFT_1ST_BUTTON_PRESSED) != 0;
 
         if (mouse.dwEventFlags == MOUSE_MOVED) {
-            // Drag-selection: button held over page text extends the range.
-            if (state.selDragging &&
-                (mouse.dwButtonState & FROM_LEFT_1ST_BUTTON_PRESSED) != 0 &&
-                g_consolePageOpen && y >= 6) {
-                const size_t total = state.selLines.empty()
-                    ? state.pageLineCount : state.selLines.size();
-                if (total > 0) {
-                    long line = static_cast<long>(state.scrollOffset) + (y - 6);
-                    state.selCursor = std::clamp(line, 0L,
-                        static_cast<long>(total) - 1);
+            // Drag in progress: track the end cell; a move without the
+            // button means the release happened outside the window.
+            if (state.mouseSelDown) {
+                if ((mouse.dwButtonState & FROM_LEFT_1ST_BUTTON_PRESSED) != 0) {
+                    state.selEX = x;
+                    state.selEY = y;
+                } else {
+                    FinishScreenSel(state, x, y);
                 }
                 return;
             }
@@ -3048,18 +3163,28 @@ namespace console_ui {
             }
             return;
         }
-        // Left-button release ends a drag selection (release itself is not
-        // a click — presses are handled below).
-        if (state.selDragging &&
+        // Button release: decide click vs drag-selection.
+        if (state.mouseSelDown &&
             (mouse.dwButtonState & (FROM_LEFT_1ST_BUTTON_PRESSED |
                                     FROM_LEFT_2ND_BUTTON_PRESSED)) == 0) {
-            state.selDragging = false;
-            // A click without a drag leaves no range — leave select mode.
-            if (!HasSelection(state)) state.selectMode = false;
+            FinishScreenSel(state, x, y);
             return;
         }
         if (!isClick) return;
 
+        // Left press arms a potential drag; the click itself is dispatched
+        // on release so dragging never triggers links or buttons.
+        state.mouseSelDown = true;
+        state.selSX = state.selEX = x;
+        state.selSY = state.selEY = y;
+        state.screenSelValid = false;
+        state.focus = Focus::Page;
+        return;
+    }
+
+    // Left-click dispatch — runs on button release when the drag turned
+    // out to be a plain click (see HandleMouse / FinishScreenSel).
+    void HandleLeftClick(State& state, int x, int y) {
         RefreshSize(state);
         // Settings dropdown rows (topmost overlay).
         for (const auto& hit : state.settingsHits) {
@@ -3134,27 +3259,6 @@ namespace console_ui {
                 state.inputViewStart + static_cast<size_t>(relative));
             state.browsingHistory = false;
             return;
-        }
-        // Press on plain page text starts a drag selection; presses on
-        // links/fields below still activate the item immediately.
-        if (g_consolePageOpen && y >= 6 && y < state.height - 3) {
-            bool onItem = false;
-            for (const auto& r : state.itemRows)
-                if (r.row == y) { onItem = true; break; }
-            if (!onItem && state.pageLineCount > 0) {
-                state.selectMode = true;
-                state.selDragging = true;
-                const long line = static_cast<long>(state.scrollOffset) + (y - 6);
-                const long maxLine = static_cast<long>(
-                    state.selLines.empty() ? state.pageLineCount
-                                           : state.selLines.size()) - 1;
-                state.selAnchor = state.selCursor =
-                    std::clamp(line, 0L, std::max(0L, maxLine));
-                state.selectedItem = -1;
-                state.hoveredItem = -1;
-                state.focus = Focus::Page;
-                return;
-            }
         }
         for (const auto& row : state.itemRows) {
             if (y == row.row) {
@@ -3280,20 +3384,26 @@ namespace console_ui {
                     case MOUSE_EVENT: {
                         const MOUSE_EVENT_RECORD& mouse = record.Event.MouseEvent;
                         if (mouse.dwEventFlags == MOUSE_MOVED) {
+                            const bool wasDragging = state.mouseSelDown;
                             const int previousHover = state.hoveredItem;
                             const int previousAction = state.hoveredAction;
                             const int previousButton = state.hoveredSearchButton;
                             const int previousSuggest = state.hoverSuggest;
                             const int previousMenu = state.settingsHover;
                             HandleMouse(state, mouse);
-                            redraw = redraw || previousHover != state.hoveredItem ||
+                            redraw = redraw || wasDragging ||
+                                     previousHover != state.hoveredItem ||
                                      previousAction != state.hoveredAction ||
                                      previousButton != state.hoveredSearchButton ||
                                      previousSuggest != state.hoverSuggest ||
                                      previousMenu != state.settingsHover;
                         } else if (mouse.dwButtonState == 0 &&
                                    mouse.dwEventFlags != DOUBLE_CLICK) {
-                            // button release — no redraw needed
+                            // Button release — only interesting mid-drag.
+                            if (state.mouseSelDown) {
+                                HandleMouse(state, mouse);
+                                redraw = true;
+                            }
                         } else {
                             HandleMouse(state, mouse);
                             redraw = true;
