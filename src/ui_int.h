@@ -219,6 +219,8 @@ namespace console_ui {
     void LoadThemeSetting();
     void SaveThemeSetting();
     bool SaveThemeAs(const std::wstring& name);
+    void ApplySiteTheme(const std::wstring& url);
+    bool PullTheme(const std::wstring& name);
     void RebuildVisibleFields(State& state);
     size_t ItemCount(const State& state);
     int ImageIndexForItem(const State& state, int item);

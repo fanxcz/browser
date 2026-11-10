@@ -51,6 +51,7 @@ add_library(browser_core STATIC
     src/ai.cpp
     src/downloads.cpp
     src/sync.cpp
+    src/extra.cpp
     src/app.cpp
     src/ui_theme.cpp
     src/ui_primitives.cpp

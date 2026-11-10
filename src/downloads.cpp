@@ -470,6 +470,7 @@ static void DownloadWorker(std::wstring url, std::string filename,
             if (resumed)
                 message << " [докачано с " << baseBytes << " байт]";
             ReportDownload(message.str());
+            UiDownloadToast(destination.filename().wstring());
             // Sites like fanxcz.github.io publish <file>.sha256.txt next to
             // each download — verify integrity when present.
             VerifyDownloadChecksum(url, destination, filename);

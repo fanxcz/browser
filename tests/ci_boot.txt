@@ -1,0 +1,4 @@
+# CI bootstrap — launched before mechanics.txt by the GitHub Action.
+# Starts a fresh Browser.exe; mechanics.txt then attaches by name.
+launch build/Release/Browser.exe
+wait 1500

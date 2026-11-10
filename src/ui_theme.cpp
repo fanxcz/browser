@@ -207,6 +207,48 @@ namespace console_ui {
         return true;
     }
 
+    // Per-site theme override (data/sites/<host>.theme or a `theme` rule).
+    // Restores the saved theme when navigating away from an overridden page.
+    void ApplySiteTheme(const std::wstring& url) {
+        static bool hadOverride = false;
+        const std::wstring name = SiteThemeFor(url);
+        if (name.empty()) {
+            if (hadOverride) { hadOverride = false; LoadThemeSetting(); }
+            return;
+        }
+        LoadThemePacks();
+        for (size_t i = 0; i < g_themes.size(); ++i) {
+            if (g_themes[i].name == name) {
+                hadOverride = true;
+                ApplyTheme(i);
+                return;
+            }
+        }
+    }
+
+    // theme pull <name> — download a theme JSON from the project site.
+    bool PullTheme(const std::wstring& name) {
+        if (name.empty()) return false;
+        const std::wstring url =
+            L"https://fanxcz.github.io/browser/themes/" + name +
+            L".json";
+        Response r = Request(url, CacheMode::Bypass);
+        if (!r.ok) return false;
+        const std::string js(r.body.begin(), r.body.end());
+        if (js.find("\"name\"") == std::string::npos &&
+            js.find("\"mode\"") == std::string::npos)
+            return false;
+        std::error_code ec;
+        const fs::path dir = DataDirPath() / L"themes";
+        fs::create_directories(dir, ec);
+        std::ofstream out(dir / (name + L".json"),
+                          std::ios::binary | std::ios::trunc);
+        out << js;
+        if (!out) return false;
+        LoadThemePacks();
+        return true;
+    }
+
     void SaveThemeSetting() {
         // Rewrite settings.txt preserving other keys (e.g. downloads=).
         std::vector<std::wstring> lines;

@@ -73,6 +73,16 @@ namespace console_ui {
         {L"engine", L"поисковик"}, {L"engine ", L"поисковик…"},
         {L"feedback", L"issues на GitHub"}, {L"repo", L"репозиторий"},
         {L"site", L"сайт проекта"}, {L"ver", L"версия"},
+        {L"queue", L"очередь чтения"}, {L"queue add ", L"в очередь…"},
+        {L"queue next", L"следующая из очереди"},
+        {L"macro ", L"макрос…"}, {L"wsave ", L"сохранить статью офлайн…"},
+        {L"woffline ", L"открыть офлайн-статью…"}, {L"wiki", L"офлайн-википедия"},
+        {L"digest", L"дайджест RSS-лент"}, {L"export-md ", L"экспорт статей в .md…"},
+        {L"headers", L"заголовки ответа"}, {L"cookies", L"cookie-сайт"},
+        {L"netlog", L"журнал сети"}, {L"rules", L"правила сайтов"},
+        {L"syncpage", L"страница синхронизации"},
+        {L"register-protocol", L"протокол browser:// в Windows"},
+        {L"fileassoc", L"«открыть в Browser» для .html"},
         {L"palette", L"эта палитра"},
     };
 

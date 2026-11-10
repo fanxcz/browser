@@ -296,6 +296,16 @@ bool CreateRequest(const std::wstring& url, RequestHandles& handles,
         static_cast<DWORD>(-1),
         WINHTTP_ADDREQ_FLAG_ADD);
 
+    // Cookie jar (data/cookies.txt): send matching cookies per host.
+    const std::wstring cookie = CookieHeaderFor(url);
+    if (!cookie.empty()) {
+        WinHttpAddRequestHeaders(
+            handles.request,
+            (L"Cookie: " + cookie + L"\r\n").c_str(),
+            static_cast<DWORD>(-1),
+            WINHTTP_ADDREQ_FLAG_ADD);
+    }
+
     // Disable WinHTTP's built-in redirect following: Request() implements
     // its own loop so the final URL, cache keys and cancel checks stay
     // under our control. The download worker follows redirects itself.
@@ -318,6 +328,23 @@ std::wstring QueryHeader(HINTERNET request, DWORD query) {
                              buffer.data(), &bytes, WINHTTP_NO_HEADER_INDEX))
         return {};
 
+    return std::wstring(buffer.data());
+}
+
+// Raw response headers block (CRLF-separated) for the devtools pages.
+std::wstring QueryRawHeaders(HINTERNET request) {
+    DWORD bytes = 0;
+    WinHttpQueryHeaders(request, WINHTTP_QUERY_RAW_HEADERS_CRLF,
+                        WINHTTP_HEADER_NAME_BY_INDEX,
+                        nullptr, &bytes, WINHTTP_NO_HEADER_INDEX);
+    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || bytes == 0)
+        return {};
+    std::vector<wchar_t> buffer(bytes / sizeof(wchar_t) + 1, L'\0');
+    if (!WinHttpQueryHeaders(request, WINHTTP_QUERY_RAW_HEADERS_CRLF,
+                             WINHTTP_HEADER_NAME_BY_INDEX,
+                             buffer.data(), &bytes,
+                             WINHTTP_NO_HEADER_INDEX))
+        return {};
     return std::wstring(buffer.data());
 }
 
@@ -411,6 +438,7 @@ static Response RequestOnce(const std::wstring& url, CacheMode mode,
     for (int attempt = 0; attempt < 2; ++attempt) {
     response = Response{};
     locationOut.clear();
+    const auto reqStart = Clock::now();
     RequestHandles handles;
     if (!CreateRequest(url, handles, postBody ? L"POST" : L"GET")) {
         if (haveCached) return cachedResponse;
@@ -525,6 +553,18 @@ static Response RequestOnce(const std::wstring& url, CacheMode mode,
                 }
             }
         }
+    }
+
+    // Devtools-lite: record raw headers (cookie jar + headers page) and a
+    // netlog line for every real network exchange.
+    if (sent) {
+        const std::wstring rawHdrs = QueryRawHeaders(handles.request);
+        if (!rawHdrs.empty()) RecordResponseHeaders(url, rawHdrs);
+        const uint64_t ms = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                Clock::now() - reqStart).count());
+        NetLogRecord(url, postBody ? L"POST" : L"GET",
+                     response.status, response.body.size(), ms);
     }
 
     CloseRequest(handles);

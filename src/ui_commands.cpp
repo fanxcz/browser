@@ -504,6 +504,11 @@ namespace console_ui {
                     if (i == g_themeIndex) list += L"*";
                 }
                 g_consoleStatus = list;
+            } else if (arg.rfind(L"pull ", 0) == 0) {
+                const std::wstring tname = TrimWide(arg.substr(5));
+                g_consoleStatus = PullTheme(tname)
+                    ? L"Тема скачана: " + tname
+                    : L"Не удалось скачать тему " + tname;
             } else {
                 bool found = false;
                 for (size_t i = 0; i < g_themes.size(); ++i) {
@@ -770,6 +775,118 @@ namespace console_ui {
         if (lower.rfind(L"note ", 0) == 0) {
             UiAddNote(TrimWide(value.substr(5)));
             g_consoleStatus = L"Заметка сохранена (data/notes.txt).";
+            return;
+        }
+
+        // --- Ecosystem pack -------------------------------------------------
+        if (lower == L"queue") {
+            UiOpenInternalPage(L"queue");
+            state.focus = Focus::Page;
+            return;
+        }
+        if (lower == L"queue-list" || lower.rfind(L"queue ", 0) == 0) {
+            UiQueueCommand(lower == L"queue-list"
+                               ? L"list" : TrimWide(value.substr(6)),
+                           g_consoleStatus);
+            return;
+        }
+        if (lower == L"macro" || lower.rfind(L"macro ", 0) == 0) {
+            const std::wstring arg = lower == L"macro"
+                ? L"list" : TrimWide(value.substr(6));
+            if (LowerWide(arg) == L"list" || arg.empty()) {
+                const auto names = ListMacroNames();
+                g_consoleStatus = names.empty()
+                    ? L"Макросов нет — data/macros.txt: имя = команда ; команда"
+                    : L"Макросы: " + [&]{
+                        std::wstring s;
+                        for (const auto& n : names) { if (!s.empty()) s += L", "; s += n; }
+                        return s; }();
+                return;
+            }
+            const auto steps = LoadMacroSteps(arg);
+            if (steps.empty()) {
+                g_consoleStatus = L"Макрос не найден: " + arg;
+                return;
+            }
+            g_consoleStatus = L"Макрос «" + arg + L"»: " +
+                std::to_wstring(steps.size()) + L" шагов.";
+            for (const auto& step : steps) {
+                state.input = step;
+                state.caret = step.size();
+                state.inputViewStart = 0;
+                Submit(state); // recursive — each step is a normal command
+            }
+            state.focus = Focus::Page;
+            return;
+        }
+        if (lower == L"wsave" || lower.rfind(L"wsave ", 0) == 0) {
+            UiWikiSave(lower == L"wsave" ? L"" : TrimWide(value.substr(6)));
+            return;
+        }
+        if (lower == L"woffline" || lower.rfind(L"woffline ", 0) == 0 ||
+            lower == L"wiki") {
+            if (lower == L"wiki") {
+                UiOpenInternalPage(L"wiki");
+            } else {
+                UiOpenInternalPage(L"wiki/" +
+                    (lower == L"woffline" ? L"" : TrimWide(value.substr(9))));
+            }
+            state.focus = Focus::Page;
+            return;
+        }
+        if (lower == L"digest") {
+            UiOpenInternalPage(L"digest");
+            state.focus = Focus::Page;
+            return;
+        }
+        if (lower == L"headers") {
+            UiOpenInternalPage(L"headers");
+            state.focus = Focus::Page;
+            return;
+        }
+        if (lower == L"cookies" || lower.rfind(L"cookies ", 0) == 0) {
+            if (lower == L"cookies clear" || lower == L"cookies-clear") {
+                CookiesClear();
+                g_consoleStatus = L"Cookie-файл очищен.";
+            } else {
+                UiOpenInternalPage(L"cookies");
+                state.focus = Focus::Page;
+            }
+            return;
+        }
+        if (lower == L"netlog" || lower.rfind(L"netlog ", 0) == 0) {
+            if (lower == L"netlog clear" || lower == L"netlog-clear") {
+                NetLogClear();
+                g_consoleStatus = L"Журнал сети очищен.";
+            } else {
+                UiOpenInternalPage(L"netlog");
+                state.focus = Focus::Page;
+            }
+            return;
+        }
+        if (lower == L"rules") {
+            UiOpenInternalPage(L"rules");
+            state.focus = Focus::Page;
+            return;
+        }
+        if (lower == L"syncpage" || lower == L"sync-page") {
+            UiOpenInternalPage(L"sync");
+            state.focus = Focus::Page;
+            return;
+        }
+        if (lower == L"export-md" || lower.rfind(L"export-md ", 0) == 0) {
+            int days = 7;
+            if (lower != L"export-md") {
+                try { days = std::stoi(ToUtf8(TrimWide(value.substr(10)))); }
+                catch (...) {}
+            }
+            UiExportMarkdown(days);
+            return;
+        }
+        if (lower == L"register-protocol" || lower == L"protocol" ||
+            lower.rfind(L"fileassoc", 0) == 0 ||
+            lower == L"unregister-protocol") {
+            g_consoleStatus = UiOsCommand(TrimWide(value));
             return;
         }
         if (lower.rfind(L"define ", 0) == 0 || lower.rfind(L"dict ", 0) == 0) {

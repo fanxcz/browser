@@ -337,6 +337,8 @@ ParsedPage ParseHtml5(const std::string& html, const std::wstring& url);
 
 // feeds.cpp — RSS/Atom detection and reader rendering.
 bool LooksLikeFeed(const std::string& html);
+struct FeedItem { std::string title, link, date, desc; };
+std::vector<FeedItem> ParseFeedItems(const std::string& xml);
 FetchOutcome BuildFeedPage(const std::wstring& url, const std::string& xml);
 
 // downloads.cpp — downloads page builder (used by the load pipeline).
@@ -524,6 +526,69 @@ std::vector<std::wstring> LoadFeedSubscriptions();
 bool FeedSubscribe(const std::wstring& url);
 bool FeedUnsubscribe(size_t index1);
 FetchOutcome BuildFeedsPage();
+
+// ---------------------------------------------------------------------------
+// extra.cpp — ecosystem pack: reading queue, macros, rules, wiki offline,
+// feeds digest, export-md, OS integration, toasts, netlog/headers/cookies.
+// ---------------------------------------------------------------------------
+
+// Reading queue (data/queue.txt).
+void UiQueueCommand(const std::wstring& args, std::wstring& statusOut);
+bool UiQueueAdd(const std::wstring& url);
+bool UiQueueRemove(size_t index1);
+void UiQueueClear();
+bool UiQueuePop(std::wstring& urlOut);
+FetchOutcome BuildQueuePage();
+
+// Macros (data/macros.txt): "name = cmd1 ; cmd2 ; ...".
+std::vector<std::wstring> LoadMacroSteps(const std::wstring& name);
+std::vector<std::wstring> ListMacroNames();
+
+// Declarative content rules (data/rules/*.txt):
+//   <url-substring> \t hide <text> | replace <from> => <to> | theme <name>
+void ApplyContentRules(const std::wstring& url, std::string& text);
+std::wstring SiteThemeFor(const std::wstring& url); // "" = no override
+FetchOutcome BuildRulesPage();
+
+// Offline Wikipedia (wiki/<slug>.txt under DataDir).
+void UiWikiSave(const std::wstring& article);
+FetchOutcome BuildWikiPage(const std::wstring& name); // "" = index
+
+// RSS digest across all subscriptions (browser://digest).
+FetchOutcome BuildDigestPage();
+
+// Batch markdown export of recent history → saved/articles/ (bg thread).
+void UiExportMarkdown(int days);
+
+// Sync extras (sync.cpp provides the gist plumbing).
+FetchOutcome BuildSyncPage();
+
+// DevTools-lite.
+FetchOutcome BuildHeadersPage();
+FetchOutcome BuildCookiesPage();
+FetchOutcome BuildNetlogPage();
+void NetLogClear();
+void CookiesClear();
+
+// Network-layer hooks (called from network.cpp).
+void NetLogRecord(const std::wstring& url, const wchar_t* method,
+                  DWORD status, uint64_t bytes, uint64_t ms);
+void RecordResponseHeaders(const std::wstring& url,
+                           const std::wstring& rawHeaders);
+std::wstring CookieHeaderFor(const std::wstring& url);
+std::vector<std::wstring> HeadersForUrl(const std::wstring& url);
+void CookiesClearAll();
+
+// OS integration.
+std::wstring UiOsCommand(const std::wstring& args); // register-protocol etc.
+void UiDownloadToast(const std::wstring& fileName);
+
+// Extra internal pages dispatcher — returns ok=false for unknown kinds.
+FetchOutcome BuildExtraInternalPage(const std::wstring& url);
+
+// URL handed off via argv (browser:// protocol, .html file association).
+// Consumed once by the console UI after session restore.
+extern std::wstring g_pendingLaunchUrl;
 
 // Startup maintenance: daily data backup + cache size eviction.
 void MaybeDailyBackup();

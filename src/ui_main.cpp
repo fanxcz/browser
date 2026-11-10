@@ -56,6 +56,15 @@ namespace console_ui {
         // Restore tabs saved in the previous session (data/tabs.txt).
         // --safe-mode starts with a single fresh tab instead.
         if (!g_safeMode) RestoreTabs();
+        // browser:// protocol / .html file association handoff.
+        if (!g_pendingLaunchUrl.empty()) {
+            const std::wstring u = g_pendingLaunchUrl;
+            g_pendingLaunchUrl.clear();
+            if (IsInternalPageUrl(u))
+                UiOpenInternalPage(u.substr(std::wstring(kInternalPrefix).size()));
+            else
+                UiOpenUrl(u);
+        }
         if (g_safeMode)
             g_consoleStatus = L"Безопасный режим — вкладки и история не "
                               L"восстанавливались.";
@@ -109,6 +118,8 @@ namespace console_ui {
                 state.refreshUrl = g_refreshUrl;
                 state.refreshAt = Clock::now() +
                     std::chrono::seconds(std::max(1, g_refreshSeconds));
+                // Per-site theme override (data/sites/<host>.theme, rules).
+                ApplySiteTheme(g_currentUrl);
                 // Browser-like: the console window title shows the page title.
                 const std::wstring title = g_currentTitle.empty()
                     ? g_currentUrl

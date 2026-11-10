@@ -151,6 +151,10 @@ namespace console_ui {
                     L"lucky", L"snapshot", L"sessions", L"restore",
                     L"find", L"images", L"copy",
                     L"settings", L"feeds", L"feed", L"palette",
+                    L"queue", L"macro", L"wsave", L"woffline", L"wiki",
+                    L"digest", L"export-md", L"headers", L"cookies",
+                    L"netlog", L"rules", L"syncpage",
+                    L"register-protocol", L"fileassoc",
                     L"update", L"noimg", L"verify" };
                 const std::wstring low = LowerWide(in);
                 std::vector<std::wstring> cmds;

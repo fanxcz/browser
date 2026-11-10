@@ -1,0 +1,11 @@
+# Browser macros — data/macros.txt
+# Format: name = command ; command ; command
+# Steps run through the normal omnibox command dispatcher.
+#
+# Copy this file to <browser-data>/macros.txt and edit.
+
+morning = home ; feeds ; digest
+news = feeds ; digest
+clean = cache clear ; history-clear-older 30
+focus = fullscreen
+darksite = theme Тёмная

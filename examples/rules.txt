@@ -1,0 +1,16 @@
+# Browser declarative rules — data/rules.txt (or data/rules/*.txt)
+# Format: <url-substring>\t<action>
+# Actions:
+#   hide <text>            — drop rendered lines containing <text>
+#   replace <from> => <to> — literal text substitution
+#   theme <name>           — force a theme pack on matching pages
+#
+# Copy into <browser-data>/rules.txt or <browser-data>/rules/<site>.txt.
+
+# example.com — demo only:
+# example.com	hide monitoring
+# example.com	replace examples => примеры
+# example.com	theme Светлая
+
+# Force dark theme on a noisy site:
+# habr.com	theme Тёмная

@@ -38,6 +38,43 @@ int wmainImpl(int argc, wchar_t** argv) {
             wcscmp(argv[i], L"-safe") == 0)
             g_safeMode = true;
     }
+    // Protocol/file-association handoff: first non-flag argument is a URL.
+    // browser://<host> opens the site; browser://<internal-kind> opens an
+    // internal page; a local file path opens browser://file/<enc>.
+    {
+        std::wstring arg;
+        for (int i = 1; i < argc; ++i) {
+            if (argv[i][0] == L'-') continue;
+            arg = argv[i];
+            break;
+        }
+        if (!arg.empty()) {
+            if (arg.rfind(L"browser://", 0) == 0) {
+                const std::wstring rest = arg.substr(9);
+                const size_t slash = rest.find_first_of(L"/?#");
+                const std::wstring head =
+                    slash == std::wstring::npos ? rest
+                                                 : rest.substr(0, slash);
+                static const wchar_t* kInternal[] = {
+                    L"queue", L"digest", L"headers", L"cookies",
+                    L"netlog", L"rules", L"sync", L"wiki", L"notes",
+                    L"feeds", L"settings", L"about", L"cache", L"ip",
+                    L"stats", L"help", L"downloads", L"ai", L"file"};
+                bool internal = false;
+                for (const wchar_t* k : kInternal)
+                    if (head == k) { internal = true; break; }
+                g_pendingLaunchUrl = internal
+                    ? arg : (L"https://" + rest);
+            } else if (GetFileAttributesW(arg.c_str()) !=
+                       INVALID_FILE_ATTRIBUTES) {
+                g_pendingLaunchUrl =
+                    std::wstring(kInternalPrefix) + L"file/" +
+                    ToWide(UrlEncode(ToUtf8(arg)));
+            } else {
+                g_pendingLaunchUrl = NormalizeUrl(arg);
+            }
+        }
+    }
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);
     SetConsoleTitleW(L"Browser - Console Search");

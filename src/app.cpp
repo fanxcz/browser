@@ -98,6 +98,7 @@ Clock::time_point g_loadStart{};
 std::atomic_bool g_loadCancel{false};
 std::mutex g_loadMutex;
 bool g_safeMode = false;          // --safe-mode: no session restore
+std::wstring g_pendingLaunchUrl;  // argv URL (protocol/file association)
 std::atomic_long g_loadingTabIdx{-1}; // tab with the running load (-1 none)
 
 // Internal pages defined later in this file.
@@ -199,6 +200,8 @@ FetchOutcome FetchPage(const std::wstring& url, CacheMode mode,
         ParsedPage page = ParseHtml5(decoded, url);
         outcome.title = std::move(page.title);
         outcome.text = std::move(page.text);
+        // Declarative site rules (data/rules/*.txt): hide/replace lines.
+        ApplyContentRules(url, outcome.text);
         outcome.links = std::move(page.links);
         outcome.images = std::move(page.images);
         outcome.fields = std::move(page.fields);
@@ -1398,8 +1401,13 @@ void LoadWorker(LoadJob job) {
             result.ok = true;
             result.statusText = L"RSS-ленты — feed add <url>.";
         } else {
-            result.ok = false;
-            result.statusText = L"Неизвестная внутренняя страница.";
+            // Ecosystem pages: queue, digest, sync, headers, cookies,
+            // netlog, rules, wiki[/name].
+            result.outcome = BuildExtraInternalPage(job.url);
+            result.ok = result.outcome.ok;
+            result.statusText = result.ok
+                ? L"Страница браузера."
+                : L"Неизвестная внутренняя страница.";
         }
     } else if (job.kind == LoadJob::Kind::Ai) {
         result.outcome = AiAsk(job.query, job.aiContext);
@@ -2305,6 +2313,18 @@ std::string HelpPageText() {
         "  home <url> — своя главная страница.\n"
         "  feedback / repo / site — GitHub-ссылки проекта.\n"
         "  ver — версия браузера.\n"
+        "\n"
+        "■ ЭКОСИСТЕМА\n"
+        "  queue / queue add|next|del|clear — очередь чтения.\n"
+        "  macro <имя> — макросы из data/macros.txt.\n"
+        "  rules — декларативные правила data/rules/*.txt.\n"
+        "  digest — дайджест RSS-лент за сутки.\n"
+        "  export-md <дн> — статьи из истории в .md (saved/articles/).\n"
+        "  wsave <статья> / woffline <имя> / wiki — офлайн-википедия.\n"
+        "  headers / cookies / netlog — devtools-lite (ответ, куки, лог).\n"
+        "  syncpage / sync push|pull — синхронизация Gist с merge.\n"
+        "  register-protocol / fileassoc — интеграция с Windows.\n"
+        "  theme pull <имя> — тема из онлайн-галереи.\n"
         "\n"
         "■ КЛАВИШИ НА СТРАНИЦЕ\n"
         "  j/k, Enter — ссылка, o — адрес, ,/. — назад/вперёд,\n"

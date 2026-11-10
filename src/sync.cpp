@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <unordered_set>
 
 namespace {
 
@@ -104,13 +105,18 @@ void SetGistId(const std::wstring& id) {
 }
 
 const char* kSyncMarkers[] = {
-    "==HISTORY==", "==BOOKMARKS==", "==TABS==", "==SETTINGS=="};
+    "==HISTORY==", "==BOOKMARKS==", "==TABS==", "==SETTINGS==",
+    "==NOTES==", "==FEEDS==", "==QUEUE=="};
+const int kSyncSectionCount = 7;
 const fs::path* SyncPaths() {
     static const fs::path paths[] = {
         DataDirPath() / L"history.txt",
         DataDirPath() / L"bookmarks.txt",
         DataDirPath() / L"tabs.txt",
         DataDirPath() / L"settings.txt",
+        DataDirPath() / L"notes.txt",
+        DataDirPath() / L"feeds.txt",
+        DataDirPath() / L"queue.txt",
     };
     return paths;
 }
@@ -118,7 +124,7 @@ const fs::path* SyncPaths() {
 std::string BuildSyncPayload() {
     const fs::path* paths = SyncPaths();
     std::string payload;
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < kSyncSectionCount; ++i) {
         payload += kSyncMarkers[i];
         payload += '\n';
         payload += ReadTextFile(paths[i]);
@@ -127,7 +133,53 @@ std::string BuildSyncPayload() {
     return payload;
 }
 
-// Split the payload back into the four data files.
+// Sections that merge line-wise on pull (device-local files like tabs and
+// settings are overwritten instead — they describe THIS machine).
+bool SyncSectionMerges(int index) {
+    return index <= 1 || index >= 4; // history, bookmarks, notes, feeds, queue
+}
+
+// Union-merge two line-based files: local order first, remote-only lines
+// appended. `urlKey` extracts the dedupe key (history carries "ts\turl").
+std::string MergeLineContent(const std::string& local,
+                             const std::string& remote,
+                             bool dedupeByUrl) {
+    auto split = [](const std::string& s) {
+        std::vector<std::string> v;
+        size_t pos = 0;
+        while (pos <= s.size()) {
+            const size_t nl = s.find('\n', pos);
+            std::string line = s.substr(
+                pos, nl == std::string::npos ? std::string::npos
+                                             : nl - pos);
+            while (!line.empty() && (line.back() == '\r' ||
+                                     line.back() == ' '))
+                line.pop_back();
+            if (!line.empty()) v.push_back(line);
+            if (nl == std::string::npos) break;
+            pos = nl + 1;
+        }
+        return v;
+    };
+    const auto keyOf = [&](const std::string& line) {
+        if (!dedupeByUrl) return line;
+        const size_t tab = line.find('\t');
+        return tab == std::string::npos ? line : line.substr(tab + 1);
+    };
+    std::vector<std::string> out = split(local);
+    std::unordered_set<std::string> seen;
+    for (const auto& l : out) seen.insert(keyOf(l));
+    for (const auto& l : split(remote)) {
+        if (seen.insert(keyOf(l)).second) out.push_back(l);
+    }
+    std::string merged;
+    for (const auto& l : out) { merged += l; merged += '\n'; }
+    return merged;
+}
+
+// Split the payload back into the data files. Mergeable sections are
+// union-merged with the local file instead of overwritten, so two machines
+// syncing the same gist keep BOTH sides' history/bookmarks/notes.
 bool ApplySyncPayload(const std::string& payload) {
     const fs::path* paths = SyncPaths();
     std::vector<std::pair<size_t, size_t>> sections;
@@ -153,7 +205,17 @@ bool ApplySyncPayload(const std::string& payload) {
                (payload[end - 1] == '\n' || payload[end - 1] == '\r' ||
                 payload[end - 1] == ' '))
             --end;
-        WriteTextFile(paths[i], payload.substr(begin, end - begin) + "\n");
+        std::string remote = payload.substr(begin, end - begin);
+        if (!remote.empty() && remote.back() != '\n') remote += '\n';
+        if (SyncSectionMerges(static_cast<int>(i))) {
+            // Merge with what's already here.
+            const std::string local = ReadTextFile(paths[i]);
+            const bool urlKey = i == 0; // history.txt: "ts\turl" lines
+            WriteTextFile(paths[i],
+                          MergeLineContent(local, remote, urlKey));
+        } else {
+            WriteTextFile(paths[i], remote);
+        }
     }
     return true;
 }
@@ -173,6 +235,11 @@ void UiSync(const std::wstring& action) {
         report(id.empty()
             ? L"GitHub-синхронизация не настроена. Команды: sync push, sync pull."
             : L"Синхронизация: gist " + id + L" (sync push / sync pull)");
+        return;
+    }
+
+    if (act == L"page") {
+        UiOpenInternalPage(L"sync");
         return;
     }
 
@@ -242,5 +309,68 @@ void UiSync(const std::wstring& action) {
         return;
     }
 
-    report(L"Команды: sync push, sync pull, sync status.");
+    report(L"Команды: sync push, sync pull, sync status, sync page.");
+}
+
+// browser://sync — what's in the gist vs local, per section.
+FetchOutcome BuildSyncPage() {
+    FetchOutcome out;
+    out.ok = true;
+    out.finalUrl = std::wstring(kInternalPrefix) + L"sync";
+    out.title = "Синхронизация";
+    const std::wstring id = GistId();
+    std::string text =
+        "Синхронизация через GitHub Gist (нужен gh CLI, gh auth login).\n"
+        "Секции: история, закладки, заметки, ленты, очередь — MERGE "
+        "(объединяются), вкладки и настройки — перезаписываются.\n\n";
+    if (id.empty()) {
+        text += "Gist не привязан. Выполните: sync push\n";
+        out.text = NormalizeDisplayText(text);
+        return out;
+    }
+    text += "Gist: " + ToUtf8(id) + "\n\n";
+
+    // Remote payload → per-section line counts.
+    const std::string payload = RunCapture(
+        L"gh gist view " + id +
+        L" --filename browser-sync.txt --raw", 45000);
+    std::vector<size_t> remoteCount(kSyncSectionCount, 0);
+    bool remoteOk = payload.find(kSyncMarkers[0]) != std::string::npos;
+    if (remoteOk) {
+        for (int i = 0; i < kSyncSectionCount; ++i) {
+            const size_t m = payload.find(kSyncMarkers[i]);
+            if (m == std::string::npos) continue;
+            size_t begin = m + std::strlen(kSyncMarkers[i]);
+            size_t end = payload.size();
+            for (int j = i + 1; j < kSyncSectionCount; ++j) {
+                const size_t nm = payload.find(kSyncMarkers[j], begin);
+                if (nm != std::string::npos) { end = nm; break; }
+            }
+            size_t count = 0;
+            for (size_t p = begin; p < end; ++p)
+                if (payload[p] == '\n' &&
+                    p > begin && payload[p - 1] != '\r' &&
+                    p - begin > 1) ++count;
+            remoteCount[i] = count;
+        }
+    }
+
+    static const char* kNames[] = {
+        "История", "Закладки", "Вкладки", "Настройки",
+        "Заметки", "Ленты", "Очередь"};
+    const fs::path* paths = SyncPaths();
+    for (int i = 0; i < kSyncSectionCount; ++i) {
+        const std::string local = ReadTextFile(paths[i]);
+        size_t localCount = 0;
+        for (char c : local) if (c == '\n') ++localCount;
+        const std::string merge = SyncSectionMerges(i) ? "merge" : "replace";
+        text += std::string(kNames[i]) + ": локально " +
+                std::to_string(localCount) + ", в gist " +
+                (remoteOk ? std::to_string(remoteCount[i]) : "?") +
+                "  [" + merge + "]\n";
+    }
+    text += "\nКоманды: sync push (отправить), sync pull (получить + "
+            "merge), sync status.\n";
+    out.text = NormalizeDisplayText(text);
+    return out;
 }

@@ -345,6 +345,100 @@ expect Сессии
 key alt+left
 wait 1000
 
+# --- ecosystem pack: queue / digest / devtools / wiki / sync pages ---
+key ctrl+l
+wait 300
+text queue add https://example.com/
+wait 200
+key enter
+wait 500
+expect Добавлено
+key ctrl+l
+wait 300
+text queue
+wait 200
+key enter
+wait 1200
+expect Очередь чтения
+expect example.com
+key ctrl+l
+wait 300
+text queue next
+wait 200
+key enter
+wait 4000
+expect This domain
+key ctrl+l
+wait 300
+text digest
+wait 200
+key enter
+wait 3000
+expect Дайджест
+key ctrl+l
+wait 300
+text headers
+wait 200
+key enter
+wait 800
+expect Заголовки
+key ctrl+l
+wait 300
+text cookies
+wait 200
+key enter
+wait 800
+expect Cookie
+key ctrl+l
+wait 300
+text netlog
+wait 200
+key enter
+wait 800
+expect Журнал сети
+key ctrl+l
+wait 300
+text rules
+wait 200
+key enter
+wait 800
+expect Правила
+key ctrl+l
+wait 300
+text wiki
+wait 200
+key enter
+wait 800
+expect Офлайн-википедия
+key ctrl+l
+wait 300
+text syncpage
+wait 200
+key enter
+wait 800
+expect Синхронизация
+key ctrl+l
+wait 300
+text export-md 1
+wait 200
+key enter
+wait 600
+expect Экспорт
+key ctrl+l
+wait 300
+text macro
+wait 200
+key enter
+wait 500
+expect Макрос
+key ctrl+l
+wait 300
+text queue clear
+wait 200
+key enter
+wait 500
+expect очищена
+
 dump build/Release/final_screen.txt
 shot build/Release/final.png
 echo DONE

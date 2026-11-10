@@ -1,4 +1,4 @@
-name: Windows build
+name: Windows build + tests
 
 on:
   push:
@@ -19,8 +19,17 @@ jobs:
         uses: actions/checkout@v4
       - name: Configure
         run: cmake -S . -B build
-      - name: Build Browser.exe
-        run: cmake --build build --config Release --target Browser --parallel
+      - name: Build all targets
+        run: cmake --build build --config Release --parallel
+      - name: Unit tests
+        run: ctest --test-dir build -C Release --output-on-failure
+      - name: Mechanics harness
+        shell: pwsh
+        run: |
+          # Fresh Browser.exe + full user-mechanics script.
+          Get-Content tests/ci_boot.txt, tests/mechanics.txt |
+            Set-Content tests/ci_run.txt -Encoding ascii
+          ./build/Release/browser_harness.exe run tests/ci_run.txt
       - name: Upload Browser.exe
         uses: actions/upload-artifact@v4
         with:

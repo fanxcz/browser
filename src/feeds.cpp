@@ -75,22 +75,10 @@ bool LooksLikeFeed(const std::string& html) {
             probe.find("<item") != std::string::npos);
 }
 
-FetchOutcome BuildFeedPage(const std::wstring& url,
-                           const std::string& xml) {
-    FetchOutcome out;
-    out.ok = true;
-    out.finalUrl = url;
-    out.isFeed = true;
-    out.title = "Лента";
-
-    // Feed/channel title.
-    const std::string feedTitle =
-        XmlTagText(xml.substr(0, std::min<size_t>(xml.size(), 65536)),
-                   "title");
-    if (!feedTitle.empty()) out.title = feedTitle;
-
-    struct Item { std::string title, link, date, desc; };
-    std::vector<Item> items;
+// One parsed feed entry, shared by the feed page and the digest builder.
+// (FeedItem is declared in browser.h.)
+std::vector<FeedItem> ParseFeedItems(const std::string& xml) {
+    std::vector<FeedItem> items;
     size_t pos = 0;
     while (items.size() < 100) {
         // Next <item> (RSS/RDF) or <entry> (Atom), whichever comes first.
@@ -110,7 +98,7 @@ FetchOutcome BuildFeedPage(const std::wstring& url,
         const std::string block = xml.substr(start, end - start);
         pos = end;
 
-        Item it;
+        FeedItem it;
         it.title = XmlTagText(block, "title");
         it.link = XmlTagText(block, "link");
         if (it.link.empty()) {
@@ -154,10 +142,28 @@ FetchOutcome BuildFeedPage(const std::wstring& url,
         if (it.title.empty() && it.link.empty()) continue;
         items.push_back(std::move(it));
     }
+    return items;
+}
+
+FetchOutcome BuildFeedPage(const std::wstring& url,
+                           const std::string& xml) {
+    FetchOutcome out;
+    out.ok = true;
+    out.finalUrl = url;
+    out.isFeed = true;
+    out.title = "Лента";
+
+    // Feed/channel title.
+    const std::string feedTitle =
+        XmlTagText(xml.substr(0, std::min<size_t>(xml.size(), 65536)),
+                   "title");
+    if (!feedTitle.empty()) out.title = feedTitle;
+
+    const std::vector<FeedItem> items = ParseFeedItems(xml);
 
     std::string text;
     for (size_t i = 0; i < items.size(); ++i) {
-        const Item& it = items[i];
+        const FeedItem& it = items[i];
         text += std::to_string(i + 1) + ". " +
                 (it.title.empty() ? it.link : it.title) + "\n";
         if (!it.date.empty()) text += "   " + it.date + "\n";

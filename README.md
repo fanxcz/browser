@@ -62,6 +62,16 @@ Browser — браузер, который живёт **внутри консо�
 | ⚙ **Страница настроек** | `browser://settings` — все переключатели в одном месте |
 | 📡 **RSS-агрегатор** | `feed add <url>` + `browser://feeds` — ленты в одном списке |
 | 🔄 **Автообновление** | `update` / `update apply` — проверка и установка нового релиза |
+| 📚 **Очередь чтения** | `queue add/next/del` + `browser://queue` — «прочитать позже» |
+| 🗞 **RSS-дайджест** | `digest` — всё новое по всем лентам за сутки на одной странице |
+| 🧩 **Макросы** | `data/macros.txt`: `имя = команда ; команда` → `macro <имя>` |
+| 🛠 **Правила сайтов** | `data/rules/*.txt`: `url → hide/replace/theme` без JS-движка |
+| 🎨 **Темы по сайтам** | `data/sites/<хост>.theme` — своя тема для конкретного сайта |
+| 📖 **Офлайн-википедия** | `wsave <статья>` → `wiki/`, `woffline`/`wiki` — без сети |
+| 📦 **Экспорт в Markdown** | `export-md <дни>` — статьи из истории → `saved/articles/` |
+| 🪟 **Интеграция с Windows** | `register-protocol`, `fileassoc`, toast-уведомления о загрузках |
+| 🔬 **DevTools-lite** | `browser://headers`, `browser://cookies`, `netlog` — куки и лог сети |
+| ☁ **Синхронизация+** | Gist: история/закладки/**заметки/ленты/очередь** с merge, `browser://sync` diff |
 
 ## Управление
 
@@ -88,7 +98,18 @@ Browser — браузер, который живёт **внутри консо�
 
 Боковые кнопки мыши: X1 — назад, X2 — вперёд.
 
-Полный список команд — `help` внутри браузера (~90 команд: `tabname`, `pin`, `engine`, `offline`, `zoom`, `theme`, `snapshot`, `sessions`, `lucky`, `copy`, `find`, `feed`, `settings`, `update apply`…).
+Полный список команд — `help` внутри браузера (~110 команд: `tabname`, `pin`, `engine`, `offline`, `zoom`, `theme`, `snapshot`, `sessions`, `lucky`, `copy`, `find`, `feed`, `settings`, `update apply`, `queue`, `macro`, `wsave`, `digest`, `export-md`, `headers`, `netlog`, `rules`, `syncpage`, `register-protocol`, `fileassoc`…).
+
+### Экосистема: файлы данных
+
+Рядом с `data/` можно класть свои правила и макросы (примеры — в `examples/`):
+
+- `data/macros.txt` — `morning = home ; feeds ; digest`
+- `data/rules.txt` или `data/rules/<сайт>.txt` — `<часть-url>⇥hide <текст>` / `⇥replace <от> => <до>` / `⇥theme <имя>`
+- `data/sites/<хост>.theme` — файл с именем темы, напр. `habr.com.theme` → `Тёмная`
+- `data/queue.txt`, `data/wiki/`, `data/cookies.txt`, `data/netlog.txt` — создаются сами
+
+`theme pull <имя>` качает темы из галереи (`themes/*.json` в этом репо → сайт).
 
 ## Быстрый старт
 
