@@ -1574,21 +1574,29 @@ void ApplyResult(const LoadResult& result) {
 }
 
 // Build an in-memory "page" for history / bookmarks.
-void CommitInternalPage(const std::wstring& kind) {
+// `filter` (history only): keep entries whose URL contains the needle.
+void CommitInternalPage(const std::wstring& kind,
+                        const std::wstring& filter = L"") {
     ParsedPage page;
     std::vector<HistoryEntry> entries;
 
     if (kind == L"history") {
         // Most recent first, duplicates removed, with visit times.
+        const std::wstring needle = LowerWide(TrimWide(filter));
         auto all = ReadHistoryEntries(HistoryFilePath());
         std::vector<HistoryEntry> reversed(all.rbegin(), all.rend());
         std::unordered_set<std::wstring> seen;
         for (const auto& entry : reversed) {
+            if (!needle.empty() &&
+                LowerWide(entry.url).find(needle) == std::wstring::npos)
+                continue;
             if (seen.insert(entry.url).second)
                 entries.push_back(entry);
             if (entries.size() >= 200) break;
         }
-        page.title = "История посещений";
+        page.title = needle.empty()
+            ? "История посещений"
+            : "История: " + ToUtf8(filter);
     } else {
         for (const auto& url : LoadBookmarks())
             entries.push_back({url, 0});
@@ -1607,7 +1615,9 @@ void CommitInternalPage(const std::wstring& kind) {
     }
     if (entries.empty())
         text = kind == L"history"
-            ? "История пуста. Выполните поиск или откройте сайт."
+            ? (filter.empty()
+                ? "История пуста. Выполните поиск или откройте сайт."
+                : "Ничего не найдено по запросу «" + ToUtf8(filter) + "».")
             : "Закладок нет. Нажмите Ctrl+D на любой странице, чтобы сохранить её.";
     page.text = NormalizeDisplayText(text);
 
@@ -1958,6 +1968,18 @@ void MaybeDailyBackup() {
     }
     std::wofstream out(marker, std::ios::trunc);
     out << date << L'\n';
+
+    // Rotate: keep only the 14 most recent daily backups.
+    const fs::path backups = dir / L"backups";
+    std::vector<fs::path> days;
+    for (const auto& e : fs::directory_iterator(backups, ec)) {
+        if (e.is_directory(ec)) days.push_back(e.path());
+    }
+    std::sort(days.begin(), days.end());
+    while (days.size() > 14) {
+        fs::remove_all(days.front(), ec);
+        days.erase(days.begin());
+    }
 }
 
 // Bound the cache: delete oldest files until under ~500 MB.
@@ -2266,6 +2288,11 @@ void UiShowHistoryPage() {
     g_consoleStatus = L"История посещений. Клик по строке открывает страницу.";
 }
 
+void UiShowHistorySearch(const std::wstring& query) {
+    CommitInternalPage(L"history", query);
+    g_consoleStatus = L"История по запросу «" + query + L"».";
+}
+
 void UiShowBookmarksPage() {
     CommitInternalPage(L"bookmarks");
     g_consoleStatus = L"Закладки. Ctrl+D на странице добавляет её сюда.";
@@ -2283,6 +2310,7 @@ std::string HelpPageText() {
         "  back / forward / reload / home — история и перезагрузка\n"
         "  reload <сек> — автообновление страницы\n"
         "  history / bookmarks / downloads — внутренние страницы\n"
+        "  history <запрос> — фильтр по истории.\n"
         "  download <url> [имя] — скачать файл\n"
         "  edge <url> — страница через headless Edge (JS)\n"
         "  web [url] — открыть в WebView2-окне\n"
@@ -2691,7 +2719,30 @@ std::wstring UiApplyUpdate() {
     if (!VersionNewer(tag, kAppVersion))
         return L"Уже установлена последняя версия " + ToWide(tag) + L".";
 
-    const std::string dl = jsonField("browser_download_url");
+    // All asset URLs: pick the exe (not a checksum/notes sidecar) plus an
+    // optional .sha256 asset for integrity verification.
+    std::vector<std::string> assetUrls;
+    {
+        const std::string key = "\"browser_download_url\"";
+        size_t pos = 0;
+        while ((pos = body.find(key, pos)) != std::string::npos) {
+            const size_t q1 = body.find('"', body.find(':', pos) + 1);
+            if (q1 == std::string::npos) break;
+            const size_t q2 = body.find('"', q1 + 1);
+            if (q2 == std::string::npos) break;
+            assetUrls.push_back(body.substr(q1 + 1, q2 - q1 - 1));
+            pos = q2 + 1;
+        }
+    }
+    std::string dl, sumUrl;
+    for (const auto& u : assetUrls) {
+        if (u.find(".sha256") != std::string::npos ||
+            u.find("checksum") != std::string::npos) {
+            if (sumUrl.empty()) sumUrl = u;
+        } else if (dl.empty()) {
+            dl = u;
+        }
+    }
     if (dl.empty()) return L"В релизе нет exe-ассета.";
 
     g_consoleStatus = L"Скачиваю Browser " + ToWide(tag) + L"…";
@@ -2705,6 +2756,35 @@ std::wstring UiApplyUpdate() {
         out.write(asset.body.data(),
                   static_cast<std::streamsize>(asset.body.size()));
         if (!out) return L"Не удалось записать файл обновления.";
+    }
+
+    // Integrity: when the release ships a .sha256 asset, the staged exe
+    // must match it before we swap it in.
+    if (!sumUrl.empty()) {
+        Response sumResp = Request(ToWide(sumUrl), CacheMode::Bypass);
+        if (!sumResp.ok) {
+            fs::remove(staged);
+            return L"Не удалось скачать контрольную сумму обновления.";
+        }
+        std::string want(sumResp.body.begin(), sumResp.body.end());
+        const size_t hexEnd = want.find_first_not_of(
+            "0123456789abcdefABCDEF");
+        want = want.substr(0, hexEnd);
+        std::array<BYTE, 32> digest{};
+        if (want.size() != 64 || !Sha256File(staged, digest)) {
+            fs::remove(staged);
+            return L"Не удалось проверить обновление (sha256).";
+        }
+        std::string got = Sha256Hex(digest);
+        for (auto& c : want) c = static_cast<char>(
+            std::tolower(static_cast<unsigned char>(c)));
+        for (auto& c : got) c = static_cast<char>(
+            std::tolower(static_cast<unsigned char>(c)));
+        if (got != want) {
+            fs::remove(staged);
+            return L"Обновление не прошло проверку sha256 — "
+                    L"установка отменена.";
+        }
     }
 
     wchar_t cur[MAX_PATH]{};
@@ -2724,6 +2804,9 @@ std::wstring UiApplyUpdate() {
         return L"Ошибка установки — прежний exe восстановлен.";
     }
 
+    // Reset the exe self-check baseline: the swapped-in exe is new.
+    fs::remove(DataDirPath() / L"selfhash.txt", ec);
+
     // Persist tabs so the fresh instance restores the session, then
     // launch it and get out of the way.
     SnapshotActiveTab();
@@ -2740,6 +2823,44 @@ std::wstring UiApplyUpdate() {
         CloseHandle(pi.hProcess);
     }
     ExitProcess(0);
+}
+
+// Startup integrity self-check: remember the SHA-256 of Browser.exe in
+// data/selfhash.txt on first run; warn once if the exe on disk no longer
+// matches (corrupted download, partial update, tampering).
+void UiSelfCheckIntegrity() {
+    std::thread([] {
+        try {
+            wchar_t cur[MAX_PATH]{};
+            if (!GetModuleFileNameW(nullptr, cur, MAX_PATH)) return;
+            const fs::path exe = cur;
+            std::array<BYTE, 32> digest{};
+            if (!Sha256File(exe, digest)) return;
+            const std::string hex = Sha256Hex(digest);
+            const fs::path stamp = DataDirPath() / L"selfhash.txt";
+            std::error_code ec;
+            std::string stored;
+            {
+                std::ifstream in(stamp, std::ios::binary);
+                in >> stored;
+            }
+            if (stored.empty()) {
+                std::ofstream out(stamp, std::ios::binary | std::ios::trunc);
+                out << hex;
+                return;
+            }
+            for (auto& c : stored)
+                c = static_cast<char>(
+                    std::tolower(static_cast<unsigned char>(c)));
+            if (stored != hex) {
+                std::lock_guard<std::mutex> lock(g_updateMutex);
+                g_updateNotice =
+                    L"Внимание: Browser.exe изменился с прошлого запуска "
+                    L"(self-check). Файл мог быть повреждён — скачайте "
+                    L"свежую копию на github.com/fanxcz/browser";
+            }
+        } catch (...) {}
+    }).detach();
 }
 
 void UiOpenInternalPage(const std::wstring& kind) {

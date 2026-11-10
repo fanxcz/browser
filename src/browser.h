@@ -403,6 +403,8 @@ void UiForward();
 void UiReload();
 void UiBookmark();
 void UiShowHistoryPage();
+void UiShowHistorySearch(const std::wstring& query);
+void UiSelfCheckIntegrity();
 void UiShowBookmarksPage();
 void UiClearHistory();
 void UiClearBookmarks();

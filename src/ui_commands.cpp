@@ -113,6 +113,14 @@ namespace console_ui {
             return;
         }
         if (lower == L"history") { UiShowHistoryPage(); state.focus = Focus::Page; return; }
+        if (lower.rfind(L"history ", 0) == 0 ||
+            lower.rfind(L"hist ", 0) == 0) {
+            // history <запрос> / hist <запрос> — filtered history page.
+            const size_t off = lower.rfind(L"hist ", 0) == 0 ? 5 : 8;
+            UiShowHistorySearch(TrimWide(value.substr(off)));
+            state.focus = Focus::Page;
+            return;
+        }
         if (lower == L"bookmarks") { UiShowBookmarksPage(); state.focus = Focus::Page; return; }
         if (lower == L"downloads") { UiOpenInternalPage(L"downloads"); state.focus = Focus::Page; return; }
         if (lower.rfind(L"edge ", 0) == 0) {

@@ -93,6 +93,7 @@ int wmainImpl(int argc, wchar_t** argv) {
     }
 
     LoadHistory();
+    UiSelfCheckIntegrity();
 
     const HRESULT comInit = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     const bool shouldUninitializeCom = SUCCEEDED(comInit);

@@ -87,6 +87,15 @@ expect This domain
 key ctrl+h
 wait 1500
 expect История
+key ctrl+l
+wait 300
+text hist example
+wait 200
+key enter
+wait 1500
+expect История по запросу
+key alt+left
+wait 1500
 key ctrl+b
 wait 1500
 expect Закладк
