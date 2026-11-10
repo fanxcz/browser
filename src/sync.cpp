@@ -222,6 +222,13 @@ bool ApplySyncPayload(const std::string& payload) {
 
 } // namespace
 
+// Public wrapper for unit tests.
+std::string MergeSyncLines(const std::string& local,
+                           const std::string& remote,
+                           bool dedupeByUrl) {
+    return MergeLineContent(local, remote, dedupeByUrl);
+}
+
 // Sync push/pull via GitHub Gist. action: "push" | "pull" | "" (status).
 void UiSync(const std::wstring& action) {
     const bool ui = g_consoleUiMode;
@@ -368,6 +375,47 @@ FetchOutcome BuildSyncPage() {
                 std::to_string(localCount) + ", в gist " +
                 (remoteOk ? std::to_string(remoteCount[i]) : "?") +
                 "  [" + merge + "]\n";
+    }
+
+    // Live diff: which URLs/lines exist in the gist but not locally.
+    if (remoteOk) {
+        std::vector<std::string> fresh;
+        for (int i = 0; i < kSyncSectionCount && SyncSectionMerges(i);
+             ++i) {
+            const size_t m = payload.find(kSyncMarkers[i]);
+            if (m == std::string::npos) continue;
+            size_t begin = m + std::strlen(kSyncMarkers[i]);
+            size_t end = payload.size();
+            for (int j = i + 1; j < kSyncSectionCount; ++j) {
+                const size_t nm = payload.find(kSyncMarkers[j], begin);
+                if (nm != std::string::npos) { end = nm; break; }
+            }
+            const std::string local = ReadTextFile(paths[i]);
+            size_t pos = begin;
+            while (pos < end && fresh.size() < 20) {
+                size_t nl = payload.find('\n', pos);
+                if (nl == std::string::npos || nl > end) nl = end;
+                std::string line = payload.substr(pos, nl - pos);
+                while (!line.empty() && (line.back() == '\r' ||
+                                         line.back() == ' '))
+                    line.pop_back();
+                pos = nl + 1;
+                if (line.empty()) continue;
+                // Dedupe key mirrors MergeLineContent.
+                std::string key = line;
+                if (i == 0) { // history: "ts\turl"
+                    const size_t tab = key.find('\t');
+                    if (tab != std::string::npos) key = key.substr(tab + 1);
+                }
+                if (local.find(key) == std::string::npos)
+                    fresh.push_back(std::string(kNames[i]) + ": " + line);
+            }
+        }
+        if (!fresh.empty()) {
+            text += "\nНовое на gist (нет локально):\n";
+            for (const auto& f : fresh)
+                text += "  " + f + "\n";
+        }
     }
     text += "\nКоманды: sync push (отправить), sync pull (получить + "
             "merge), sync status.\n";

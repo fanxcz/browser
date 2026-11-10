@@ -80,6 +80,7 @@ namespace console_ui {
         {L"digest", L"дайджест RSS-лент"}, {L"export-md ", L"экспорт статей в .md…"},
         {L"headers", L"заголовки ответа"}, {L"cookies", L"cookie-сайт"},
         {L"netlog", L"журнал сети"}, {L"rules", L"правила сайтов"},
+        {L"gallery", L"галерея тем"}, {L"netlog har", L"экспорт HAR…"},
         {L"syncpage", L"страница синхронизации"},
         {L"register-protocol", L"протокол browser:// в Windows"},
         {L"fileassoc", L"«открыть в Browser» для .html"},

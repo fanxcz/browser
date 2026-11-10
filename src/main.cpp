@@ -58,6 +58,7 @@ int wmainImpl(int argc, wchar_t** argv) {
                 static const wchar_t* kInternal[] = {
                     L"queue", L"digest", L"headers", L"cookies",
                     L"netlog", L"rules", L"sync", L"wiki", L"notes",
+                    L"gallery",
                     L"feeds", L"settings", L"about", L"cache", L"ip",
                     L"stats", L"help", L"downloads", L"ai", L"file"};
                 bool internal = false;

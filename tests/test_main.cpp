@@ -595,6 +595,89 @@ static void TestBookmarksAndHistory() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Ecosystem pack: sync merge, feed dates, slugs, cookie jar matching.
+// ---------------------------------------------------------------------------
+
+static void TestEcosystem() {
+    std::printf("== ecosystem ==\n");
+
+    // MergeSyncLines: union, order preserved, remote-only appended.
+    {
+        const std::string merged = MergeSyncLines(
+            "a.com\nb.com\n", "b.com\nc.com\n", false);
+        CHECK(merged.find("a.com") != std::string::npos);
+        CHECK(merged.find("c.com") != std::string::npos);
+        CHECK(merged.find("b.com") != std::string::npos);
+        // b.com appears once (dedupe by full line).
+        CHECK(merged.find("b.com\nb.com") == std::string::npos);
+    }
+    // History lines dedupe by URL part (after the timestamp tab).
+    {
+        const std::string merged = MergeSyncLines(
+            "100\thttps://a.com\n", "200\thttps://a.com\n300\thttps://b.com\n",
+            true);
+        CHECK(merged.find("https://a.com") != std::string::npos);
+        CHECK(merged.find("https://b.com") != std::string::npos);
+        // a.com kept once even though timestamps differ.
+        size_t first = merged.find("https://a.com");
+        CHECK(first != std::string::npos &&
+              merged.find("https://a.com", first + 1) ==
+                  std::string::npos);
+    }
+
+    // FeedDateToUnix: ISO 8601 and RFC 822.
+    {
+        const uint64_t iso = FeedDateToUnix("2025-01-31T12:00:00Z");
+        CHECK(iso > 1700000000 && iso < 1800000000);
+        const uint64_t rfc = FeedDateToUnix(
+            "Fri, 31 Jan 2025 12:00:00 +0000");
+        CHECK(rfc > 1700000000 && rfc < 1800000000);
+        CHECK(FeedDateToUnix("") == 0);
+        CHECK(FeedDateToUnix("not a date") == 0);
+    }
+
+    // SafeSlug: filesystem-safe article names.
+    {
+        CHECK(SafeSlug(L"Война и мир") == L"война-и-мир");
+        CHECK(SafeSlug(L"C++ & Rust?") == L"c-rust");
+        CHECK(SafeSlug(L"  ") .empty());
+    }
+
+    // Cookie jar: write a jar file, verify host/path/secure matching.
+    {
+        const fs::path jar = DataDirPath() / L"cookies.txt";
+        {
+            std::wofstream out(jar, std::ios::trunc);
+            out << L"example.com\tsession=abc\t0\t0\t/\t1\n"      // host-only
+                << L"example.com\ttheme=dark\t0\t0\t/\t0\n"     // domain
+                << L"example.com\tadmin=1\t0\t1\t/\t1\n"        // secure
+                << L"example.com\tapp=x\t0\t0\t/app\t1\n";      // path
+        }
+        // https host-only cookie matches.
+        CHECK(CookieHeaderFor(L"https://example.com/")
+                  .find(L"session=abc") != std::wstring::npos);
+        // http does NOT get the Secure cookie.
+        CHECK(CookieHeaderFor(L"http://example.com/")
+                  .find(L"admin=1") == std::wstring::npos);
+        CHECK(CookieHeaderFor(L"https://example.com/")
+                  .find(L"admin=1") != std::wstring::npos);
+        // Domain cookie reaches subdomains.
+        CHECK(CookieHeaderFor(L"https://www.example.com/")
+                  .find(L"theme=dark") != std::wstring::npos);
+        // Path cookie only on matching prefix.
+        CHECK(CookieHeaderFor(L"https://example.com/app/page")
+                  .find(L"app=x") != std::wstring::npos);
+        CHECK(CookieHeaderFor(L"https://example.com/other")
+                  .find(L"app=x") == std::wstring::npos);
+        // Host-only cookie does NOT leak to subdomains.
+        CHECK(CookieHeaderFor(L"https://sub.example.com/")
+                  .find(L"session=abc") == std::wstring::npos);
+        std::error_code ec;
+        fs::remove(jar, ec);
+    }
+}
+
 int main() {
     setvbuf(stdout, nullptr, _IONBF, 0); // unbuffered: see progress when hung
     std::printf("Browser unit tests\n");
@@ -615,6 +698,7 @@ int main() {
     TestReaderMode();
     TestSearchHelpers();
     TestBookmarksAndHistory();
+    TestEcosystem();
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

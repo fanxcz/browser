@@ -140,6 +140,7 @@ namespace console_ui {
         state.ssX1 = cx; state.ssY1 = y;
         state.ssX2 = ex; state.ssY2 = y;
         state.screenSelValid = true;
+        state.selLastScroll = state.scrollOffset;
         state.selAnchor = state.selCursor = -1;
         g_consoleStatus = L"Слово выделено — c / Ctrl+C копирует.";
     }
@@ -164,6 +165,7 @@ namespace console_ui {
         state.ssX1 = 0; state.ssY1 = y;
         state.ssX2 = state.width - 1; state.ssY2 = y;
         state.screenSelValid = true;
+        state.selLastScroll = state.scrollOffset;
         state.selAnchor = state.selCursor = -1;
         g_consoleStatus = L"Строка выделена — c / Ctrl+C копирует.";
     }
@@ -227,6 +229,7 @@ namespace console_ui {
             state.ssX2 = std::max(state.selSX, ex);
             state.ssY2 = std::max(state.selSY, ey);
             state.screenSelValid = true;
+            state.selLastScroll = state.scrollOffset;
             state.clickCount = 0; // a drag is not a click streak
             g_consoleStatus = L"Выделено — c / Ctrl+C копирует.";
         }

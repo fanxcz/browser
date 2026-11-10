@@ -538,6 +538,10 @@ bool UiQueueAdd(const std::wstring& url);
 bool UiQueueRemove(size_t index1);
 void UiQueueClear();
 bool UiQueuePop(std::wstring& urlOut);
+bool UiQueueDone(size_t index1);
+size_t LoadReadingQueueCount();
+std::wstring SafeSlug(const std::wstring& name);
+uint64_t FeedDateToUnix(const std::string& d);
 FetchOutcome BuildQueuePage();
 
 // Macros (data/macros.txt): "name = cmd1 ; cmd2 ; ...".
@@ -549,6 +553,7 @@ std::vector<std::wstring> ListMacroNames();
 void ApplyContentRules(const std::wstring& url, std::string& text);
 std::wstring SiteThemeFor(const std::wstring& url); // "" = no override
 FetchOutcome BuildRulesPage();
+FetchOutcome BuildGalleryPage();
 
 // Offline Wikipedia (wiki/<slug>.txt under DataDir).
 void UiWikiSave(const std::wstring& article);
@@ -562,6 +567,9 @@ void UiExportMarkdown(int days);
 
 // Sync extras (sync.cpp provides the gist plumbing).
 FetchOutcome BuildSyncPage();
+std::string MergeSyncLines(const std::string& local,
+                           const std::string& remote,
+                           bool dedupeByUrl);
 
 // DevTools-lite.
 FetchOutcome BuildHeadersPage();
@@ -569,6 +577,7 @@ FetchOutcome BuildCookiesPage();
 FetchOutcome BuildNetlogPage();
 void NetLogClear();
 void CookiesClear();
+std::wstring NetLogExportHar(); // → saved/netlog-<date>.har, "" on failure
 
 // Network-layer hooks (called from network.cpp).
 void NetLogRecord(const std::wstring& url, const wchar_t* method,

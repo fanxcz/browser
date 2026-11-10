@@ -70,7 +70,9 @@ Browser — браузер, который живёт **внутри консо�
 | 📖 **Офлайн-википедия** | `wsave <статья>` → `wiki/`, `woffline`/`wiki` — без сети |
 | 📦 **Экспорт в Markdown** | `export-md <дни>` — статьи из истории → `saved/articles/` |
 | 🪟 **Интеграция с Windows** | `register-protocol`, `fileassoc`, toast-уведомления о загрузках |
-| 🔬 **DevTools-lite** | `browser://headers`, `browser://cookies`, `netlog` — куки и лог сети |
+| 🔬 **DevTools-lite** | `browser://headers`, `browser://cookies`, `netlog` + `netlog har` (HAR 1.2) |
+| 🎨 **Галерея тем** | `browser://gallery` + `theme pull <имя>` — темы из репозитория |
+| ⚡ **Скорость** | Виртуализованный рендер: pageLines кэшируются, кадр не пересобирает тысячи строк |
 | ☁ **Синхронизация+** | Gist: история/закладки/**заметки/ленты/очередь** с merge, `browser://sync` diff |
 
 ## Управление
@@ -109,7 +111,7 @@ Browser — браузер, который живёт **внутри консо�
 - `data/sites/<хост>.theme` — файл с именем темы, напр. `habr.com.theme` → `Тёмная`
 - `data/queue.txt`, `data/wiki/`, `data/cookies.txt`, `data/netlog.txt` — создаются сами
 
-`theme pull <имя>` качает темы из галереи (`themes/*.json` в этом репо → сайт).
+`theme pull <имя>` качает темы из галереи (`themes/*.json` + `themes/index.json` → сайт). `netlog har` экспортирует журнал в HAR для DevTools. Куки хранят Domain/Path/Secure — как у настоящего браузера.
 
 ## Быстрый старт
 

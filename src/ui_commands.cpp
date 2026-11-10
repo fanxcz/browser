@@ -858,6 +858,11 @@ namespace console_ui {
             if (lower == L"netlog clear" || lower == L"netlog-clear") {
                 NetLogClear();
                 g_consoleStatus = L"Журнал сети очищен.";
+            } else if (lower == L"netlog har" || lower == L"netlog-har") {
+                const std::wstring p = NetLogExportHar();
+                g_consoleStatus = p.empty()
+                    ? L"Не удалось записать HAR."
+                    : L"HAR сохранён: " + p;
             } else {
                 UiOpenInternalPage(L"netlog");
                 state.focus = Focus::Page;
@@ -866,6 +871,11 @@ namespace console_ui {
         }
         if (lower == L"rules") {
             UiOpenInternalPage(L"rules");
+            state.focus = Focus::Page;
+            return;
+        }
+        if (lower == L"gallery") {
+            UiOpenInternalPage(L"gallery");
             state.focus = Focus::Page;
             return;
         }

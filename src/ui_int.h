@@ -155,6 +155,9 @@ namespace console_ui {
         bool screenSelValid = false;
         int ssX1 = 0, ssY1 = 0, ssX2 = 0, ssY2 = 0;
         size_t selStartScroll = 0; // scrollOffset when the drag began
+        // scrollOffset captured when the screen selection was committed —
+        // lets Render re-anchor the rect to page lines after scrolling.
+        size_t selLastScroll = 0;
         // Click counting for double/triple-click word/line selection.
         int lastClickX = -1, lastClickY = -1;
         int clickCount = 0;

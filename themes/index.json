@@ -1,0 +1,6 @@
+{
+  "themes": [
+    { "name": "moonlight", "file": "moonlight.json", "desc": "Тёмная с голубым акцентом" },
+    { "name": "solarized-light", "file": "solarized-light.json", "desc": "Светлая Solarized, просторная" }
+  ]
+}

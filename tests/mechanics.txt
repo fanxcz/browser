@@ -438,6 +438,20 @@ wait 200
 key enter
 wait 500
 expect очищена
+key ctrl+l
+wait 300
+text gallery
+wait 200
+key enter
+wait 4000
+expect Галерея
+key ctrl+l
+wait 300
+text netlog har
+wait 200
+key enter
+wait 600
+expect HAR
 
 dump build/Release/final_screen.txt
 shot build/Release/final.png

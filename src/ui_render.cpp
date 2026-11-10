@@ -153,7 +153,7 @@ namespace console_ui {
                     L"settings", L"feeds", L"feed", L"palette",
                     L"queue", L"macro", L"wsave", L"woffline", L"wiki",
                     L"digest", L"export-md", L"headers", L"cookies",
-                    L"netlog", L"rules", L"syncpage",
+                    L"netlog", L"rules", L"gallery", L"syncpage",
                     L"register-protocol", L"fileassoc",
                     L"update", L"noimg", L"verify" };
                 const std::wstring low = LowerWide(in);
@@ -254,6 +254,7 @@ namespace console_ui {
             static std::string wrapCacheKey;
             static size_t wrapCacheWidth = 0;
             static std::vector<std::wstring> wrapCache;
+            static uint64_t wrapGen = 0; // bumps whenever wrapCache rebuilds
             const bool wrapHit = wrapCacheWidth == lineWidth &&
                 wrapCacheKey.size() == textLimit &&
                 (textLimit == 0 ||
@@ -263,9 +264,47 @@ namespace console_ui {
                 wrapCacheKey.assign(g_currentText.data(), textLimit);
                 wrapCacheWidth = lineWidth;
                 wrapCache = Wrap(ToWide(wrapCacheKey), lineWidth, 3000);
+                ++wrapGen;
             }
             const auto& wrapped = wrapCache;
-            std::vector<PageLine> pageLines;
+
+            // Building pageLines costs ~3000 wstring copies per frame.
+            // Cache the result and rebuild only when the content
+            // fingerprint (text generation, width, links, fields, images)
+            // actually changes — i.e. virtualize the expensive part.
+            static uint64_t plFp = 0;
+            static std::vector<PageLine> plCache;
+            static std::vector<size_t> plRows;
+            uint64_t fp = wrapGen * 0x9E3779B97F4A7C15ULL + lineWidth;
+            auto mixStr = [&fp](const auto& s) {
+                for (auto c : s) {
+                    fp ^= static_cast<uint64_t>(c);
+                    fp *= 1099511628211ULL;
+                }
+            };
+            for (const auto& l : g_currentLinks) {
+                mixStr(l.label);
+                mixStr(l.url);
+            }
+            for (const auto& f : g_currentFields) {
+                fp ^= static_cast<uint64_t>(f.kind) +
+                      static_cast<uint64_t>(f.value.size()) * 7 +
+                      (f.checked ? 3 : 0) +
+                      static_cast<uint64_t>(f.selected);
+                fp *= 1099511628211ULL;
+                mixStr(f.value);
+            }
+            for (const auto& im : g_currentImages) {
+                mixStr(im.url);
+                mixStr(im.alt);
+            }
+            fp ^= UiImagesEnabled() ? 1 : 0;
+            fp ^= static_cast<uint64_t>(state.visibleFields.size()) << 8;
+            const bool plHit = fp == plFp && !plCache.empty();
+            if (!plHit) {
+            plCache.clear();
+            plRows.clear();
+            std::vector<PageLine>& pageLines = plCache;
             pageLines.reserve(wrapped.size() + g_currentLinks.size() +
                               state.visibleFields.size() + 6);
             for (const auto& line : wrapped) {
@@ -303,7 +342,7 @@ namespace console_ui {
                                          lineWidth > static_cast<size_t>(num.size() + 4)
                                              ? lineWidth - num.size() - 4 : lineWidth),
                                          static_cast<int>(i), false});
-                    state.itemPageRows.push_back(pageLines.size() - 1);
+                    plRows.push_back(pageLines.size() - 1);
                 }
             }
 
@@ -358,7 +397,7 @@ namespace console_ui {
                         lineWidth > marker.size() + 8
                             ? lineWidth - marker.size() - 8 : lineWidth),
                         static_cast<int>(linkCount + pos), false});
-                    state.itemPageRows.push_back(pageLines.size() - 1);
+                    plRows.push_back(pageLines.size() - 1);
                 }
             }
 
@@ -383,13 +422,17 @@ namespace console_ui {
                     pageLines.push_back({L"▣ " + Shorten(label,
                         lineWidth > 12 ? lineWidth - 12 : lineWidth),
                         imgBase + static_cast<int>(i), false});
-                    state.itemPageRows.push_back(pageLines.size() - 1);
+                    plRows.push_back(pageLines.size() - 1);
                 }
                 if (g_currentImages.size() > shown)
                     pageLines.push_back({L"… и ещё " +
                         std::to_wstring(g_currentImages.size() - shown),
                         -1, false});
             }
+            plFp = fp;
+            } // !plHit — pageLines rebuilt
+            const auto& pageLines = plCache;
+            state.itemPageRows = plRows;
 
             const int contentTop = state.fullscreen ? 4 : 6;
             const int footerRow = UiStatusBarOn() ? height - 2 : height - 1;
@@ -415,6 +458,30 @@ namespace console_ui {
             if (state.editingField >= 0) {
                 const int fi = ItemIndexForField(state, state.editingField);
                 if (fi >= 0) EnsureItemVisible(state, fi);
+            }
+
+            // Persistent selection: a committed screen-rect selection is
+            // anchored to PAGE LINES, not screen rows — when the page
+            // scrolls, convert the rect into a line range once so the
+            // highlight follows the text (like Firefox) instead of
+            // sliding over unrelated content.
+            if (state.screenSelValid && !state.mouseSelDown &&
+                state.scrollOffset != state.selLastScroll &&
+                state.pageLineCount > 0) {
+                const long y1 = std::min(state.ssY1, state.ssY2) - contentTop;
+                const long y2 = std::max(state.ssY1, state.ssY2) - contentTop;
+                const long cap = state.pageCapacity > 0
+                    ? state.pageCapacity : state.height - 9;
+                if (y2 >= 0 && y1 < cap) {
+                    const long l1 = static_cast<long>(state.selLastScroll) +
+                        std::max<long>(0, y1);
+                    const long l2 = static_cast<long>(state.selLastScroll) +
+                        std::min<long>(y2, cap - 1);
+                    state.selAnchor = std::min(l1, l2);
+                    state.selCursor = std::max(l1, l2);
+                }
+                state.screenSelValid = false;
+                state.selLastScroll = state.scrollOffset;
             }
 
             const long selLo = std::min(state.selAnchor, state.selCursor);
@@ -643,6 +710,18 @@ namespace console_ui {
                 std::wstring ind;
                 if (g_offline) ind += L"офлайн · ";
                 if (UiOfflineEnabled()) ind += L"офлайн-режим · ";
+                // Reading-queue badge — refreshed at most every 2 s so the
+                // status bar doesn't hit the disk every frame.
+                {
+                    static size_t qCount = 0;
+                    static Clock::time_point qAt{};
+                    if (Clock::now() - qAt > std::chrono::seconds(2)) {
+                        qAt = Clock::now();
+                        qCount = LoadReadingQueueCount();
+                    }
+                    if (qCount > 0)
+                        ind += L"📥 " + std::to_wstring(qCount) + L" · ";
+                }
                 ind += selInfo;
                 if (scrollable) {
                     const size_t cap = static_cast<size_t>(state.pageCapacity);

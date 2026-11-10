@@ -5,6 +5,8 @@
 #include <ctime>
 #include <cwchar>
 #include <deque>
+#include <map>
+#include <algorithm>
 #include <psapi.h>
 #include <random>
 #include <regex>
@@ -1773,7 +1775,40 @@ std::string StatsPageText() {
         std::to_wstring(g_currentLinks.size() + g_currentImages.size() +
                         g_currentFields.size()) +
         L"\n  Движок: Browser Console " + ToWide(kAppVersion) + L"\n";
-    return ToUtf8(text);
+
+    // Top sites over the last 7 days (from history timestamps).
+    std::wstring topSites = L"\n■ ТОП САЙТОВ (7 дней)\n";
+    {
+        const uint64_t cutoff = UnixNow() - 7ULL * 86400;
+        std::map<std::wstring, size_t> counts;
+        for (const auto& e : ReadHistoryEntries(HistoryFilePath())) {
+            if (!e.timestamp || e.timestamp < cutoff) continue;
+            if (IsInternalPageUrl(e.url) ||
+                e.url.rfind(L"http", 0) != 0) continue;
+            std::wstring h = e.url;
+            const size_t sc = h.find(L"://");
+            if (sc != std::wstring::npos) h = h.substr(sc + 3);
+            const size_t sl = h.find_first_of(L"/?#");
+            if (sl != std::wstring::npos) h = h.substr(0, sl);
+            const size_t dot = h.rfind(L'.');
+            if (dot != std::wstring::npos && dot + 1 < h.size())
+                h = h.substr(0, dot); // strip TLD for grouping
+            if (h.rfind(L"www.", 0) == 0) h = h.substr(4);
+            if (!h.empty()) ++counts[LowerWide(h)];
+        }
+        std::vector<std::pair<std::wstring, size_t>> top(
+            counts.begin(), counts.end());
+        std::sort(top.begin(), top.end(),
+                  [](const auto& a, const auto& b) {
+                      return a.second > b.second;
+                  });
+        if (top.empty()) topSites += L"  пока пусто\n";
+        for (size_t i = 0; i < top.size() && i < 10; ++i)
+            topSites += L"  " + std::to_wstring(i + 1) + L". " +
+                        top[i].first + L" — " +
+                        std::to_wstring(top[i].second) + L"\n";
+    }
+    return ToUtf8(text + topSites);
 }
 
 // browser://settings page body — live view of every persisted toggle.

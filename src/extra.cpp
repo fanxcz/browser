@@ -71,8 +71,14 @@ std::wstring HostOf(const std::wstring& url) {
 std::wstring Slugify(const std::wstring& name) {
     std::wstring out;
     for (wchar_t c : name) {
-        if (std::iswalnum(c) || c == L'-' || c == L'_')
-            out.push_back(static_cast<wchar_t>(std::towlower(c)));
+        // iswalnum is locale-dependent for Cyrillic — accept the whole
+        // Cyrillic block explicitly so Russian article names slugify.
+        const bool cyr = c >= 0x0400 && c <= 0x04FF;
+        wchar_t lc = c;
+        if (cyr && c >= 0x0410 && c <= 0x042F) lc = c + 0x20; // А-Я→а-я
+        else if (!cyr) lc = static_cast<wchar_t>(std::towlower(c));
+        if (std::iswalnum(c) || cyr || c == L'-' || c == L'_')
+            out.push_back(lc);
         else if (!out.empty() && out.back() != L'-')
             out.push_back(L'-');
     }
@@ -215,6 +221,21 @@ std::wstring g_lastNetUrl;            // most recent non-internal URL
 
 } // namespace
 
+// Public wrappers for unit tests.
+std::wstring SafeSlug(const std::wstring& name) { return Slugify(name); }
+uint64_t FeedDateToUnix(const std::string& d) { return ParseFeedDate(d); }
+
+size_t LoadReadingQueueCount() {
+    size_t n = 0;
+    std::wifstream in(QueueFilePath());
+    std::wstring line;
+    while (std::getline(in, line)) {
+        line = TrimWide(line);
+        if (!line.empty() && line.front() != L'#') ++n;
+    }
+    return n;
+}
+
 // ---------------------------------------------------------------------------
 // Reading queue — public API.
 // ---------------------------------------------------------------------------
@@ -251,6 +272,18 @@ bool UiQueuePop(std::wstring& urlOut) {
     return true;
 }
 
+// queue done <n>: mark item n as read — removes it and records the visit
+// in history (so it won't be suggested as unread again).
+bool UiQueueDone(size_t index1) {
+    auto q = LoadQueue();
+    if (index1 < 1 || index1 > q.size()) return false;
+    const std::wstring url = q[index1 - 1];
+    q.erase(q.begin() + static_cast<long>(index1 - 1));
+    WriteLines(QueueFilePath(), q);
+    AppendHistory(url);
+    return true;
+}
+
 void UiQueueCommand(const std::wstring& args, std::wstring& statusOut) {
     const std::wstring a = TrimWide(args);
     const std::wstring lower = LowerWide(a);
@@ -275,6 +308,15 @@ void UiQueueCommand(const std::wstring& args, std::wstring& statusOut) {
         } catch (...) { statusOut = L"Формат: queue del <n>"; }
         return;
     }
+    if (lower.rfind(L"done ", 0) == 0) {
+        try {
+            const long n = std::stol(ToUtf8(TrimWide(a.substr(5))));
+            statusOut = UiQueueDone(static_cast<size_t>(n))
+                ? L"Отмечено прочитанным (в истории)."
+                : L"Нет такого номера.";
+        } catch (...) { statusOut = L"Формат: queue done <n>"; }
+        return;
+    }
     if (lower == L"clear") {
         UiQueueClear();
         statusOut = L"Очередь чтения очищена.";
@@ -290,7 +332,7 @@ void UiQueueCommand(const std::wstring& args, std::wstring& statusOut) {
         }
         return;
     }
-    statusOut = L"queue add <url> · queue next · queue del <n> · "
+    statusOut = L"queue add <url> · queue next · queue done|del <n> · "
                 L"queue clear · queue list";
 }
 
@@ -663,14 +705,9 @@ void NetLogRecord(const std::wstring& url, const wchar_t* method,
         if (!IsInternalPageUrl(url)) g_lastNetUrl = url;
     }
     const uint64_t now = UnixNow();
-    std::time_t t = static_cast<std::time_t>(now);
-    std::tm tm{};
-    localtime_s(&tm, &t);
-    wchar_t tbuf[32];
-    std::swprintf(tbuf, 32, L"%02d:%02d:%02d", tm.tm_hour, tm.tm_min,
-                  tm.tm_sec);
     std::wofstream out(NetLogPath(), std::ios::app);
-    out << tbuf << L'\t' << (method ? method : L"GET") << L'\t'
+    // unixtime \t method \t url \t status \t bytes \t ms
+    out << now << L'\t' << (method ? method : L"GET") << L'\t'
         << url << L'\t' << status << L'\t' << bytes << L'\t'
         << ms << L'\n';
     std::error_code ec;
@@ -707,40 +744,88 @@ void RecordResponseHeaders(const std::wstring& url,
             lines.push_back(TrimWide(line.substr(11)));
     }
     if (lines.empty() || host.empty()) return;
+    // Jar line: domain \t name=value \t expires \t secure \t path \t hostonly
+    // (hostonly=1 means no Domain= attribute → exact-host match only).
     auto jar = ReadLines(CookiesPath());
     bool changed = false;
+    // Request path for Path= matching.
+    std::wstring reqPath = L"/";
+    {
+        const size_t scheme = url.find(L"://");
+        if (scheme != std::wstring::npos) {
+            size_t p = url.find(L'/', scheme + 3);
+            if (p != std::wstring::npos) reqPath = url.substr(p);
+        }
+    }
+    const bool isHttps = LowerWide(url).rfind(L"https:", 0) == 0;
     for (const auto& sc : lines) {
-        // "name=value; Path=/; Expires=...; HttpOnly" — keep name=value.
-        const size_t semi = sc.find(L';');
-        const std::wstring pair = TrimWide(sc.substr(
-            0, semi == std::wstring::npos ? sc.size() : semi));
+        // "name=value; Path=/; Domain=.x.com; Secure; Max-Age=60; Expires=…"
+        std::wstring rest = sc;
+        const size_t firstSemi = rest.find(L';');
+        const std::wstring pair = TrimWide(rest.substr(
+            0, firstSemi == std::wstring::npos ? rest.size() : firstSemi));
         const size_t eq = pair.find(L'=');
         if (eq == std::wstring::npos || eq == 0) continue;
         const std::wstring name = pair.substr(0, eq);
-        // Upsert: drop existing jar entry for host+name.
+        if (firstSemi != std::wstring::npos)
+            rest = rest.substr(firstSemi + 1);
+
+        std::wstring cookieDomain = host;
+        bool hostOnly = true, secure = false;
+        std::wstring cookiePath = L"/";
+        uint64_t exp = 0;
+        // Parse attributes.
+        size_t pos = 0;
+        while (pos <= rest.size()) {
+            const size_t semi = rest.find(L';', pos);
+            const std::wstring attr = TrimWide(rest.substr(
+                pos, semi == std::wstring::npos
+                         ? std::wstring::npos : semi - pos));
+            const std::wstring low = LowerWide(attr);
+            auto attrVal = [&](const wchar_t* key) -> std::wstring {
+                const std::wstring k = key;
+                if (low.rfind(k, 0) != 0) return {};
+                size_t v = k.size();
+                while (v < attr.size() && attr[v] != L'=') ++v;
+                if (v >= attr.size()) return {};
+                return TrimWide(attr.substr(v + 1));
+            };
+            if (low == L"secure") secure = true;
+            else if (const std::wstring v = attrVal(L"domain"); !v.empty()) {
+                cookieDomain = LowerWide(v);
+                if (!cookieDomain.empty() && cookieDomain.front() == L'.')
+                    cookieDomain.erase(cookieDomain.begin());
+                hostOnly = false;
+            } else if (const std::wstring v = attrVal(L"path"); !v.empty()) {
+                cookiePath = v.front() == L'/' ? v : L"/" + v;
+            } else if (const std::wstring v = attrVal(L"max-age");
+                       !v.empty()) {
+                try {
+                    const long age = std::stol(v);
+                    exp = age > 0 ? UnixNow() + static_cast<uint64_t>(age) : 0;
+                } catch (...) {}
+            } else if (const std::wstring v = attrVal(L"expires");
+                       !v.empty() && exp == 0) {
+                exp = ParseFeedDate(ToUtf8(v));
+            }
+            if (semi == std::wstring::npos) break;
+            pos = semi + 1;
+        }
+        // Upsert: drop existing jar entry for domain+name.
         jar.erase(std::remove_if(jar.begin(), jar.end(),
             [&](const std::wstring& e) {
                 const auto f = WSplitTabs(e);
-                if (f.size() < 2 || LowerWide(TrimWide(f[0])) != host)
+                if (f.size() < 2 ||
+                    LowerWide(TrimWide(f[0])) != cookieDomain)
                     return false;
                 const size_t e2 = f[1].find(L'=');
                 return e2 != std::wstring::npos &&
                        f[1].substr(0, e2) == name;
             }), jar.end());
-        uint64_t exp = 0;
-        const std::wstring rest = semi == std::wstring::npos
-            ? L"" : sc.substr(semi + 1);
-        const std::wstring lowRest = LowerWide(rest);
-        const size_t em = lowRest.find(L"max-age=");
-        if (em != std::wstring::npos) {
-            try {
-                const long age = std::stol(rest.substr(em + 8));
-                exp = age > 0 ? UnixNow() + static_cast<uint64_t>(age) : 0;
-            } catch (...) {}
-        }
-        jar.push_back(host + L"\t" + name + L"=" +
-                      pair.substr(eq + 1) + L"\t" +
-                      std::to_wstring(exp));
+        jar.push_back(cookieDomain + L"\t" + pair + L"\t" +
+                      std::to_wstring(exp) + L"\t" +
+                      (secure ? L"1" : L"0") + L"\t" + cookiePath +
+                      L"\t" + (hostOnly ? L"1" : L"0"));
         changed = true;
     }
     if (changed) WriteLines(CookiesPath(), jar);
@@ -750,21 +835,46 @@ std::wstring CookieHeaderFor(const std::wstring& url) {
     const std::wstring host = HostOf(url);
     if (host.empty()) return {};
     const uint64_t now = UnixNow();
+    const bool isHttps = LowerWide(url).rfind(L"https:", 0) == 0;
+    // Request path for Path= prefix matching.
+    std::wstring reqPath = L"/";
+    {
+        const size_t scheme = url.find(L"://");
+        if (scheme != std::wstring::npos) {
+            const size_t p = url.find(L'/', scheme + 3);
+            if (p != std::wstring::npos) reqPath = url.substr(p);
+        }
+    }
     std::wstring header;
     for (const auto& e : ReadLines(CookiesPath())) {
         const auto f = WSplitTabs(e);
         if (f.size() < 2) continue;
-        const std::wstring dom = TrimWide(f[0]);
+        const std::wstring dom = LowerWide(TrimWide(f[0]));
         uint64_t exp = 0;
         if (f.size() >= 3) {
             try { exp = std::stoull(TrimWide(f[2])); } catch (...) {}
         }
         if (exp && exp < now) continue; // expired
-        const bool match = dom == host ||
-            (host.size() > dom.size() &&
-             host.compare(host.size() - dom.size(), dom.size(), dom) == 0 &&
-             host[host.size() - dom.size() - 1] == L'.');
+        const bool secure = f.size() >= 4 && TrimWide(f[3]) == L"1";
+        if (secure && !isHttps) continue; // Secure cookies: https only
+        // hostonly (old 3-field lines count as host-only).
+        const bool hostOnly = f.size() < 6 || TrimWide(f[5]) == L"1";
+        bool match;
+        if (hostOnly) {
+            match = dom == host;
+        } else {
+            match = dom == host ||
+                (host.size() > dom.size() &&
+                 host.compare(host.size() - dom.size(), dom.size(), dom) == 0 &&
+                 host[host.size() - dom.size() - 1] == L'.');
+        }
         if (!match) continue;
+        // Path= prefix match (default "/" matches everything).
+        const std::wstring cpath = f.size() >= 5 && !TrimWide(f[4]).empty()
+            ? TrimWide(f[4]) : L"/";
+        if (cpath != L"/" &&
+            reqPath.compare(0, cpath.size(), cpath) != 0)
+            continue;
         const std::wstring pair = TrimWide(f[1]);
         if (pair.empty()) continue;
         if (!header.empty()) header += L"; ";
@@ -788,6 +898,60 @@ std::vector<std::wstring> HeadersForUrl(const std::wstring& url) {
 
 void NetLogClear() {
     std::wofstream out(NetLogPath(), std::ios::trunc);
+}
+
+std::wstring NetLogExportHar() {
+    const auto lines = ReadLines(NetLogPath());
+    std::string json =
+        "{\n  \"log\": {\n    \"version\": \"1.2\",\n"
+        "    \"creator\": {\"name\": \"Browser Console\", "
+        "\"version\": \"1.6\"},\n    \"entries\": [\n";
+    bool first = true;
+    int n = 0;
+    for (const auto& line : lines) {
+        const auto f = WSplitTabs(line);
+        if (f.size() < 6) continue;
+        uint64_t ts = 0;
+        try { ts = std::stoull(TrimWide(f[0])); } catch (...) { continue; }
+        if (ts < 1000000000) continue; // legacy HH:MM:SS lines
+        const std::string method = ToUtf8(TrimWide(f[1]));
+        const std::string url = ToUtf8(TrimWide(f[2]));
+        const std::string status = ToUtf8(TrimWide(f[3]));
+        const std::string bytes = ToUtf8(TrimWide(f[4]));
+        const std::string ms = ToUtf8(TrimWide(f[5]));
+        // ISO-8601 UTC timestamp.
+        std::time_t t = static_cast<std::time_t>(ts);
+        std::tm tm{};
+        gmtime_s(&tm, &t);
+        char iso[32];
+        std::snprintf(iso, sizeof(iso), "%04d-%02d-%02dT%02d:%02d:%02d.000Z",
+                      tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+                      tm.tm_hour, tm.tm_min, tm.tm_sec);
+        if (!first) json += ",\n";
+        first = false;
+        ++n;
+        json += "      {\"startedDateTime\": \"" + std::string(iso) +
+                "\", \"request\": {\"method\": \"" + method +
+                "\", \"url\": \"" + url + "\"}, \"response\": {\"status\": " +
+                status + ", \"content\": {\"size\": " + bytes +
+                "}}, \"time\": " + ms + "}";
+    }
+    json += "\n    ]\n  }\n}\n";
+    std::time_t t = static_cast<std::time_t>(UnixNow());
+    std::tm tm{};
+    localtime_s(&tm, &t);
+    wchar_t dbuf[16];
+    std::swprintf(dbuf, 16, L"%04d-%02d-%02d", tm.tm_year + 1900,
+                  tm.tm_mon + 1, tm.tm_mday);
+    const fs::path dir = SavedDirPath();
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    const fs::path path = dir / (L"netlog-" + std::wstring(dbuf) +
+                                 L".har");
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out << json;
+    if (!out) return {};
+    return path;
 }
 void CookiesClearAll() {
     std::wofstream out(CookiesPath(), std::ios::trunc);
@@ -859,14 +1023,30 @@ FetchOutcome BuildNetlogPage() {
     const size_t start = lines.size() > 60 ? lines.size() - 60 : 0;
     for (size_t i = start; i < lines.size(); ++i) {
         const auto f = WSplitTabs(lines[i]);
-        if (f.size() >= 6)
-            text += ToUtf8(TrimWide(f[0])) + "  " + ToUtf8(TrimWide(f[1])) +
+        if (f.size() >= 6) {
+            // Field 0 is a unix timestamp (new format); legacy lines held
+            // HH:MM:SS there — show them as-is.
+            std::wstring stamp = TrimWide(f[0]);
+            try {
+                const uint64_t ts = std::stoull(stamp);
+                if (ts > 1000000000) {
+                    std::time_t t = static_cast<std::time_t>(ts);
+                    std::tm tm{};
+                    localtime_s(&tm, &t);
+                    wchar_t tb[32];
+                    std::swprintf(tb, 32, L"%02d:%02d:%02d",
+                                  tm.tm_hour, tm.tm_min, tm.tm_sec);
+                    stamp = tb;
+                }
+            } catch (...) {}
+            text += ToUtf8(stamp) + "  " + ToUtf8(TrimWide(f[1])) +
                     "  " + ToUtf8(TrimWide(f[3])) + "  " +
                     ToUtf8(TrimWide(f[4])) + "B  " +
                     ToUtf8(TrimWide(f[5])) + "ms  " + ToUtf8(TrimWide(f[2])) +
                     "\n";
-        else
+        } else {
             text += ToUtf8(lines[i]) + "\n";
+        }
     }
     if (lines.empty()) text += "Запросов пока не было.\n";
     out.text = NormalizeDisplayText(text);
@@ -903,6 +1083,65 @@ FetchOutcome BuildRulesPage() {
                     " → " + ToUtf8(TrimWide(name)) + "\n";
         }
     }
+    out.text = NormalizeDisplayText(text);
+    return out;
+}
+
+// browser://gallery — theme gallery: local packs + remote index.
+FetchOutcome BuildGalleryPage() {
+    FetchOutcome out;
+    out.ok = true;
+    out.finalUrl = std::wstring(kInternalPrefix) + L"gallery";
+    out.title = "Галерея тем";
+    std::string text =
+        "Темы: theme <имя> — применить, theme pull <имя> — скачать,\n"
+        "theme save <имя> — сохранить текущую.\n\n";
+
+    std::set<std::string> local;
+    {
+        std::error_code ec;
+        const fs::path dir = DataDirPath() / L"themes";
+        if (fs::exists(dir, ec)) {
+            for (const auto& e : fs::directory_iterator(dir, ec))
+                if (e.path().extension() == L".json")
+                    local.insert(ToUtf8(e.path().stem().wstring()));
+        }
+    }
+    text += "Установленные темы (data/themes/):\n";
+    if (local.empty()) text += "  (нет — только встроенные)\n";
+    for (const auto& n : local) text += "  " + n + "\n";
+
+    // Remote gallery index.
+    Response r = Request(
+        L"https://fanxcz.github.io/browser/themes/index.json",
+        CacheMode::Use, nullptr);
+    text += "\nГалерея (онлайн):\n";
+    if (!r.ok) {
+        text += "  недоступна — нет сети или индекс не опубликован.\n";
+    } else {
+        const std::string js(r.body.begin(), r.body.end());
+        // "name": "x" occurrences.
+        size_t pos = 0;
+        int found = 0;
+        while (found < 30) {
+            const size_t p = js.find("\"name\"", pos);
+            if (p == std::string::npos) break;
+            const size_t q1 = js.find('"', js.find(':', p) + 1);
+            if (q1 == std::string::npos) break;
+            const size_t q2 = js.find('"', q1 + 1);
+            if (q2 == std::string::npos) break;
+            const std::string name = js.substr(q1 + 1, q2 - q1 - 1);
+            pos = q2 + 1;
+            if (name.empty()) continue;
+            ++found;
+            const bool have = local.count(name) > 0;
+            text += "  " + name + (have ? "  [установлена]"
+                                        : "  → theme pull " + name) + "\n";
+        }
+        if (!found) text += "  пусто.\n";
+    }
+    text += "\nСообщество: examples/macros.txt и examples/rules.txt в "
+            "репозитории — готовые шаблоны.\n";
     out.text = NormalizeDisplayText(text);
     return out;
 }
@@ -1059,6 +1298,7 @@ FetchOutcome BuildExtraInternalPage(const std::wstring& url) {
     if (kind == L"cookies") return BuildCookiesPage();
     if (kind == L"netlog") return BuildNetlogPage();
     if (kind == L"rules") return BuildRulesPage();
+    if (kind == L"gallery") return BuildGalleryPage();
     if (kind == L"sync") return BuildSyncPage();
     if (kind.rfind(L"wiki/", 0) == 0)
         return BuildWikiPage(url.substr(
