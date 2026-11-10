@@ -58,6 +58,7 @@ add_library(browser_core STATIC
     src/ui_render.cpp
     src/ui_actions.cpp
     src/ui_commands.cpp
+    src/ui_palette.cpp
     src/ui_input.cpp
     src/ui_mouse.cpp
     src/ui_main.cpp

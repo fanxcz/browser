@@ -6,11 +6,13 @@
 #include "browser.h"
 #include "wvhost.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cctype>
 #include <cstring>
 #include <cwchar>
+#include <cwctype>
 #include <fstream>
 #include <functional>
 #include <vector>
@@ -67,6 +69,14 @@ namespace console_ui {
         };
         return items;
     }
+
+    // Command palette (Ctrl+K / Ctrl+P) entries.
+    struct PaletteEntry {
+        int kind = 0;          // 0 command, 1 history, 2 bookmark, 3 tab
+        std::wstring text;     // command line / history text / label
+        std::wstring arg;      // command desc, bookmark URL
+        int tab = -1;          // tab index for kind 3
+    };
 
     struct ItemRow { int row = 0; int item = 0; };       // link or form field
     struct ActionHit { int row = 0; int left = 0; int right = 0; NavAction action = NavAction::Home; };
@@ -166,6 +176,14 @@ namespace console_ui {
         SHORT lastSelH = -1;
         // Omnibox/field undo stack: {text, caret} snapshots before edits.
         std::vector<std::pair<std::wstring, size_t>> inputUndo;
+        // Command palette overlay (Ctrl+K): fuzzy list of commands,
+        // history, bookmarks and tabs.
+        bool paletteOpen = false;
+        std::wstring paletteQuery;
+        std::vector<PaletteEntry> paletteEntries;
+        std::vector<int> paletteMatch;   // indices into paletteEntries
+        int paletteIndex = 0;
+        std::vector<SuggestHit> paletteHits;
         // <meta http-equiv="refresh"> auto-reload timer.
         int refreshSeconds = 0;
         int refreshInterval = 0;   // >0: repeating interval (reload N)
@@ -200,6 +218,7 @@ namespace console_ui {
     void ApplyTheme(size_t index);
     void LoadThemeSetting();
     void SaveThemeSetting();
+    bool SaveThemeAs(const std::wstring& name);
     void RebuildVisibleFields(State& state);
     size_t ItemCount(const State& state);
     int ImageIndexForItem(const State& state, int item);
@@ -263,6 +282,13 @@ namespace console_ui {
     void Submit(State& state);
     void HandleKey(State& state, const KEY_EVENT_RECORD& key, bool& running);
     void HandleMouse(State& state, const MOUSE_EVENT_RECORD& mouse);
+    // Command palette (ui_palette.cpp).
+    void PaletteOpen(State& state);
+    void PaletteClose(State& state);
+    void PaletteRebuild(State& state);
+    void PaletteActivate(State& state, int matchPos);
+    void DrawPalette(State& state);
+    bool PaletteHandleKey(State& state, const KEY_EVENT_RECORD& key);
     BOOL WINAPI ConsoleCtrlHandler(DWORD type);
     bool Run();
 

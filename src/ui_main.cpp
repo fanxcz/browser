@@ -28,10 +28,12 @@ namespace console_ui {
 
         g_consoleUiMode = true;
         // Restore omnibox/terminal command history from the last session.
-        state.inputHistory = LoadInputHistory();
-        if (state.inputHistory.size() > 80)
-            state.inputHistory.resize(80);
-        state.historyIndex = state.inputHistory.size();
+        if (!g_safeMode) {
+            state.inputHistory = LoadInputHistory();
+            if (state.inputHistory.size() > 80)
+                state.inputHistory.resize(80);
+            state.historyIndex = state.inputHistory.size();
+        }
         LoadThemePacks();
         LoadThemeSetting();
         // Persisted display/network toggles from settings.txt.
@@ -40,17 +42,23 @@ namespace console_ui {
         UiApplyStatusBarSetting();
         UiApplyPrefetchSetting();
         UiApplyZoomSetting();
-        // Maintenance: once-a-day data backup + cache size cap.
-        std::thread([] {
-            try { MaybeDailyBackup(); EvictCacheOverflow(); }
-            catch (...) {}
-        }).detach();
-        UiScheduleUpdateCheck();
+        if (!g_safeMode) {
+            // Maintenance: once-a-day data backup + cache size cap.
+            std::thread([] {
+                try { MaybeDailyBackup(); EvictCacheOverflow(); }
+                catch (...) {}
+            }).detach();
+            UiScheduleUpdateCheck();
+        }
         state.focus = Focus::Search;
         state.historyIndex = 0;
         bool running = true;
         // Restore tabs saved in the previous session (data/tabs.txt).
-        RestoreTabs();
+        // --safe-mode starts with a single fresh tab instead.
+        if (!g_safeMode) RestoreTabs();
+        if (g_safeMode)
+            g_consoleStatus = L"Безопасный режим — вкладки и история не "
+                              L"восстанавливались.";
         std::wstring lastUrl = g_currentUrl;
         Render(state);
 

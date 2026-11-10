@@ -31,6 +31,19 @@ namespace console_ui {
         }
         if (mouse.dwEventFlags == MOUSE_HWHEELED) return;
 
+        // Side mouse buttons (XBUTTON1/XBUTTON2): the console exposes them
+        // as extra button bits — 4th-from-left and 3rd-from-left.
+        // X1 → back, X2 → forward (flip here if your mouse reports them
+        // swapped).
+        if (mouse.dwEventFlags == 0 &&
+            (mouse.dwButtonState == FROM_LEFT_4TH_BUTTON_PRESSED ||
+             mouse.dwButtonState == FROM_LEFT_3RD_BUTTON_PRESSED)) {
+            ActivateAction(state,
+                mouse.dwButtonState == FROM_LEFT_4TH_BUTTON_PRESSED
+                    ? NavAction::Back : NavAction::Forward);
+            return;
+        }
+
         // Any click dismisses the image viewer; wheel is ignored.
         if (state.viewingImage) {
             if (mouse.dwEventFlags == 0 &&
@@ -153,6 +166,14 @@ namespace console_ui {
                 state.settingsHover = hoverMenu;
                 if (hoverSuggest >= 0) state.suggestIndex = hoverSuggest;
             }
+            // Hover prefetch: warm the cache for the link under the cursor
+            // (browser-style — makes the click feel instant).
+            if (hoverItem >= 0 &&
+                static_cast<size_t>(hoverItem) < g_currentLinks.size()) {
+                const std::wstring u =
+                    g_currentLinks[static_cast<size_t>(hoverItem)].url;
+                if (!u.empty()) UiPrefetchUrl(u);
+            }
             return;
         }
         // Button release: decide click vs drag-selection.
@@ -215,6 +236,18 @@ namespace console_ui {
     // out to be a plain click (see HandleMouse / FinishScreenSel).
     void HandleLeftClick(State& state, int x, int y) {
         RefreshSize(state);
+        // Command palette rows (modal overlay, topmost).
+        if (state.paletteOpen) {
+            for (const auto& hit : state.paletteHits) {
+                if (y == hit.row && x >= hit.left && x <= hit.right) {
+                    PaletteActivate(state, hit.index);
+                    return;
+                }
+            }
+            // Click outside the palette box closes it, then the click
+            // falls through to normal handling.
+            PaletteClose(state);
+        }
         // Settings dropdown rows (topmost overlay).
         for (const auto& hit : state.settingsHits) {
             if (y == hit.row && x >= hit.left && x <= hit.right) {
@@ -299,9 +332,10 @@ namespace console_ui {
                 return;
             }
         }
-        // Clicking in the page body gives the page keyboard focus for arrow scrolling.
-        if (g_consolePageOpen && y >= 6 && y < state.height - 3)
-            state.focus = Focus::Page;
+        // NOTE: no focus change here — the button press already moved
+        // focus to the page. Re-asserting it on the deferred dispatch
+        // (~250 ms later) could steal focus back from the omnibox if the
+        // user hit Ctrl+L in between.
         // Any click that didn't hit the menu closes it.
         if (state.settingsOpen) {
             state.settingsOpen = false;

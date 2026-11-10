@@ -518,6 +518,13 @@ namespace console_ui {
             const std::wstring num = L" " + std::to_wstring(i + 1) + L" ";
             std::wstring title = UiTabTitle(i);
             if (UiTabPinned(i)) title = L"▪" + title;
+            // Loading spinner on busy tabs (running or queued load).
+            if (UiTabBusy(i)) {
+                static const wchar_t* spin = L"-\\|/";
+                const int phase = static_cast<int>(
+                    Clock::now().time_since_epoch().count() / 200000000) & 3;
+                title = std::wstring(1, spin[phase]) + title;
+            }
             const int room = std::max(4, perTab - static_cast<int>(num.size()) - 1);
             title = Shorten(title, static_cast<size_t>(room));
             std::wstring label = num + title;

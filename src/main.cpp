@@ -31,7 +31,13 @@ LONG WINAPI CrashFilter(EXCEPTION_POINTERS* ep) {
     return EXCEPTION_EXECUTE_HANDLER;
 }
 
-int wmainImpl() {
+int wmainImpl(int argc, wchar_t** argv) {
+    // --safe-mode: skip session/tab restore and background maintenance.
+    for (int i = 1; i < argc; ++i) {
+        if (wcscmp(argv[i], L"--safe-mode") == 0 ||
+            wcscmp(argv[i], L"-safe") == 0)
+            g_safeMode = true;
+    }
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);
     SetConsoleTitleW(L"Browser - Console Search");
@@ -455,10 +461,10 @@ int wmainImpl() {
 
 } // namespace
 
-int wmain() {
+int wmain(int argc, wchar_t** argv) {
     SetUnhandledExceptionFilter(CrashFilter);
     try {
-        return wmainImpl();
+        return wmainImpl(argc, argv);
     } catch (const std::exception& e) {
         LogCrash(e.what());
         throw;

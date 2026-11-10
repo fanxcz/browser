@@ -97,6 +97,8 @@ std::atomic_bool g_loadRunning{false};
 Clock::time_point g_loadStart{};
 std::atomic_bool g_loadCancel{false};
 std::mutex g_loadMutex;
+bool g_safeMode = false;          // --safe-mode: no session restore
+std::atomic_long g_loadingTabIdx{-1}; // tab with the running load (-1 none)
 
 // Internal pages defined later in this file.
 std::string AboutPageText();
@@ -104,6 +106,7 @@ std::string NotesPageText();
 std::string CachePageText();
 std::string DefinePageText(const std::string& wordEnc);
 std::string TrPageText(const std::string& textEnc);
+std::string SettingsPageText();
 
 // ---------------------------------------------------------------------------
 // Page loading (network + parse)
@@ -1383,6 +1386,17 @@ void LoadWorker(LoadJob job) {
             result.outcome.text = HelpPageText();
             result.ok = true;
             result.statusText = L"Справка по командам и клавишам.";
+        } else if (job.url == std::wstring(kInternalPrefix) + L"settings") {
+            result.outcome.ok = true;
+            result.outcome.finalUrl = job.url;
+            result.outcome.title = "Настройки";
+            result.outcome.text = SettingsPageText();
+            result.ok = true;
+            result.statusText = L"Текущие настройки браузера.";
+        } else if (job.url == std::wstring(kInternalPrefix) + L"feeds") {
+            result.outcome = BuildFeedsPage();
+            result.ok = true;
+            result.statusText = L"RSS-ленты — feed add <url>.";
         } else {
             result.ok = false;
             result.statusText = L"Неизвестная внутренняя страница.";
@@ -1446,6 +1460,7 @@ void LoadWorker(LoadJob job) {
         std::lock_guard<std::mutex> lock(g_loadMutex);
         g_finishedLoad = std::move(result);
         g_loadRunning.store(false);
+        g_loadingTabIdx.store(-1);
     }
 }
 
@@ -1458,6 +1473,7 @@ void StartJobNow(const LoadJob& job) {
     g_loadTotal.store(0);
     g_loadStart = Clock::now();
     g_loadRunning.store(true);
+    g_loadingTabIdx.store(static_cast<long>(job.tabIndex));
     g_loadThread = std::thread(LoadWorker, job);
 }
 
@@ -1749,6 +1765,42 @@ std::string StatsPageText() {
         std::to_wstring(g_currentLinks.size() + g_currentImages.size() +
                         g_currentFields.size()) +
         L"\n  Движок: Browser Console " + ToWide(kAppVersion) + L"\n";
+    return ToUtf8(text);
+}
+
+// browser://settings page body — live view of every persisted toggle.
+std::string SettingsPageText() {
+    const auto yn = [](bool v) { return v ? L"вкл" : L"выкл"; };
+    const std::wstring engine = UiGetSetting(L"engine");
+    const std::wstring home = UiHomepage();
+    const std::wstring text =
+        L"Настройки браузера\n"
+        L"Текущие значения и команды для переключения.\n\n"
+        L"■ ВИД\n"
+        L"  Тема: " + [&]{ std::wstring t = UiGetSetting(L"theme");
+            return t.empty() ? L"тёмная (по умолчанию)" : t; }() +
+        L"   (theme <имя> — список: theme)\n"
+        L"  Масштаб текста: " + std::to_wstring(UiZoomPercent()) + L"%" +
+        L"   (zoom in|out|<%>)\n"
+        L"  Строка состояния: " + yn(UiStatusBarOn()) +
+        L"   (statusbar on|off)\n"
+        L"  Картинки: " + yn(UiImagesEnabled()) +
+        L"   (images on|off, noimg)\n"
+        L"  Автоподгрузка ссылок: " + yn(UiPrefetchEnabled()) +
+        L"   (prefetch on|off)\n"
+        L"\n\n"
+        L"■ СЕТЬ\n"
+        L"  Офлайн-режим (только кэш): " + yn(UiOfflineEnabled()) +
+        L"   (offline on|off)\n"
+        L"  Поисковик: " + (engine.empty() ? L"авто (DDG→Bing→Google)"
+                                           : engine) +
+        L"   (engine ddg|bing|google)\n"
+        L"  Домашняя страница: " + (home.empty() ? L"стартовая" : home) +
+        L"   (home <url>)\n\n"
+        L"■ ДАННЫЕ\n"
+        L"  Заметок: см. notes   ·   Закладок: см. bookmarks\n"
+        L"  Сессии: sessions / restore <имя>   ·   Бэкап: export\n"
+        L"  RSS-лент: feeds   ·   Кэш: cache   ·   Статистика: stats\n";
     return ToUtf8(text);
 }
 
@@ -2226,8 +2278,13 @@ std::string HelpPageText() {
         "  скачать картинку, imglinks — скопировать URL картинок.\n"
         "  copy url|domain|title|text|links|images|selection — буфер.\n"
         "  find <текст> — найти на странице, ' — регистр, Shift+F3 — назад.\n"
-        "  theme <имя> — тема, zoom in|out|<%> — масштаб, F11 — полный\n"
+        "  theme <имя> — тема, theme save <имя> — сохранить свою,\n"
+        "  zoom in|out|<%> — масштаб, F11 — полный\n"
         "  экран, statusbar/images/prefetch on|off — переключатели.\n"
+        "  Ctrl+K / palette — командная палитра (команды, история,\n"
+        "  закладки, вкладки). Боковые кнопки мыши — назад/вперёд.\n"
+        "  feed add <url> / feed del <n> / feeds — RSS-подписки.\n"
+        "  settings — страница настроек, update apply — обновиться.\n"
         "  note del <n> / notes clear — заметки, lucky — случайная страница,\n"
         "  snapshot — снимок экрана, sessions / restore <имя> — сессии.\n"
         "\n"
@@ -2550,6 +2607,84 @@ std::wstring UiTakeUpdateNotice() {
     std::wstring out = std::move(g_updateNotice);
     g_updateNotice.clear();
     return out;
+}
+
+// update apply: fetch the newest GitHub release exe and swap it in.
+// A running exe can be RENAMED on Windows (not deleted), so the swap is:
+// Browser.exe -> Browser.exe.old, update-new.exe -> Browser.exe, relaunch.
+std::wstring UiApplyUpdate() {
+    Response r = Request(
+        L"https://api.github.com/repos/fanxcz/browser/releases/latest",
+        CacheMode::Bypass);
+    if (!r.ok || r.status != 200)
+        return L"Не удалось проверить обновления — нет сети.";
+    const std::string body(r.body.begin(), r.body.end());
+
+    auto jsonField = [&](const char* key) -> std::string {
+        const std::string pat = std::string("\"") + key + "\"";
+        const size_t p = body.find(pat);
+        if (p == std::string::npos) return {};
+        const size_t q1 = body.find('"', body.find(':', p) + 1);
+        if (q1 == std::string::npos) return {};
+        const size_t q2 = body.find('"', q1 + 1);
+        return q2 == std::string::npos ? std::string()
+                                     : body.substr(q1 + 1, q2 - q1 - 1);
+    };
+    std::string tag = jsonField("tag_name");
+    if (!tag.empty() && tag.front() == 'v') tag.erase(tag.begin());
+    if (tag.empty()) return L"В ответе GitHub нет tag_name.";
+    if (!VersionNewer(tag, kAppVersion))
+        return L"Уже установлена последняя версия " + ToWide(tag) + L".";
+
+    const std::string dl = jsonField("browser_download_url");
+    if (dl.empty()) return L"В релизе нет exe-ассета.";
+
+    g_consoleStatus = L"Скачиваю Browser " + ToWide(tag) + L"…";
+    Response asset = Request(ToWide(dl), CacheMode::Bypass);
+    if (!asset.ok || asset.body.empty())
+        return L"Не удалось скачать обновление.";
+
+    const fs::path staged = DataDirPath() / L"update-new.exe";
+    {
+        std::ofstream out(staged, std::ios::binary | std::ios::trunc);
+        out.write(asset.body.data(),
+                  static_cast<std::streamsize>(asset.body.size()));
+        if (!out) return L"Не удалось записать файл обновления.";
+    }
+
+    wchar_t cur[MAX_PATH]{};
+    if (!GetModuleFileNameW(nullptr, cur, MAX_PATH))
+        return L"Не удалось определить путь к Browser.exe.";
+    const std::wstring curPath = cur;
+    const std::wstring oldPath = curPath + L".old";
+    const std::wstring newPath = staged.wstring();
+
+    std::error_code ec;
+    fs::remove(oldPath, ec);
+    if (!MoveFileW(curPath.c_str(), oldPath.c_str()))
+        return L"Не удалось заменить Browser.exe — файл занят? "
+                L"Закройте браузер и повторите.";
+    if (!MoveFileW(newPath.c_str(), curPath.c_str())) {
+        MoveFileW(oldPath.c_str(), curPath.c_str()); // rollback
+        return L"Ошибка установки — прежний exe восстановлен.";
+    }
+
+    // Persist tabs so the fresh instance restores the session, then
+    // launch it and get out of the way.
+    SnapshotActiveTab();
+    SaveTabs();
+    std::wstring cmd = L"\"" + curPath + L"\"";
+    std::vector<wchar_t> cmdBuf(cmd.begin(), cmd.end());
+    cmdBuf.push_back(L'\0');
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    if (CreateProcessW(nullptr, cmdBuf.data(), nullptr, nullptr, FALSE,
+                       0, nullptr, nullptr, &si, &pi)) {
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+    }
+    ExitProcess(0);
 }
 
 void UiOpenInternalPage(const std::wstring& kind) {
@@ -3624,4 +3759,38 @@ void UiApplyZoomSetting() {
     if (v.empty()) { g_zoomPercent = 100; return; }
     try { UiSetZoomPercent(std::stoi(ToUtf8(v))); }
     catch (...) { g_zoomPercent = 100; }
+}
+
+// --- hover prefetch / tab busy / misc feature-pack helpers -----------------
+
+void UiPrefetchUrl(const std::wstring& url) {
+    if (!g_prefetch) return;
+    const std::wstring lu = LowerWide(url);
+    if (lu.rfind(L"http://", 0) != 0 && lu.rfind(L"https://", 0) != 0)
+        return;
+    // Dedup: each URL is prefetched at most once per session.
+    static std::unordered_set<std::wstring> done;
+    static std::mutex mu;
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        if (!done.insert(url).second) return;
+        if (done.size() > 1000) done.clear();
+    }
+    std::thread([url] {
+        try { Request(url, CacheMode::Use, nullptr); }
+        catch (...) {}
+    }).detach();
+}
+
+bool UiTabBusy(size_t index) {
+    if (g_loadingTabIdx.load() == static_cast<long>(index)) return true;
+    std::lock_guard<std::mutex> lock(g_loadMutex);
+    for (const auto& j : g_queuedJobs)
+        if (j.tabIndex == index) return true;
+    return false;
+}
+
+std::wstring UiTabUrl(size_t index) {
+    EnsureTabs();
+    return index < g_tabs.size() ? g_tabs[index].url : std::wstring();
 }

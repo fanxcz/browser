@@ -108,6 +108,10 @@ namespace console_ui {
         g_themes.clear();
         g_themes.push_back({L"Тёмная", false, 0, 1});
         g_themes.push_back({L"Светлая", true, 0, 1});
+        g_themes.push_back({L"Контраст", false,
+                            FOREGROUND_RED | FOREGROUND_GREEN |
+                                FOREGROUND_BLUE | FOREGROUND_INTENSITY, 0});
+        g_themes.push_back({L"Комфорт", true, 0, 2});
         std::error_code ec;
         const fs::path dir = DataDirPath() / L"themes";
         if (fs::exists(dir, ec)) {
@@ -165,6 +169,42 @@ namespace console_ui {
             if (ToWide(nm) == wanted) { ApplyTheme(i); return; }
         }
         ApplyTheme(0);
+    }
+
+    // theme save <name>: persist the current theme as data/themes/<name>.json.
+    bool SaveThemeAs(const std::wstring& name) {
+        if (name.empty() || g_themes.empty()) return false;
+        const ThemePack& p = g_themes[g_themeIndex];
+        std::error_code ec;
+        const fs::path dir = DataDirPath() / L"themes";
+        fs::create_directories(dir, ec);
+        const fs::path path = dir / (name + L".json");
+        // Map the console accent attribute back to a hex approximation.
+        auto accentHex = [](WORD attr) -> std::string {
+            if (!attr) return {};
+            // FOREGROUND_* bits are the low nibble; INTENSITY adds 8.
+            const int idx = (attr & 0x0F) | ((attr & FOREGROUND_INTENSITY) ? 8 : 0);
+            static const char* kStd[16] = {
+                "#000000", "#0000aa", "#00aa00", "#00aaaa",
+                "#aa0000", "#aa00aa", "#aa5500", "#aaaaaa",
+                "#555555", "#5555ff", "#55ff55", "#55ffff",
+                "#ff5555", "#ff55ff", "#ffff55", "#ffffff" };
+            return kStd[idx & 0xF];
+        };
+        std::wofstream out(path, std::ios::trunc);
+        out << L"{\n  \"name\": \"" << name << L"\",\n"
+            << L"  \"mode\": \"" << (p.light ? L"light" : L"dark") << L"\",\n";
+        if (p.accent) out << L"  \"accent\": \"" << ToWide(accentHex(p.accent)) << L"\",\n";
+        out << L"  \"density\": \""
+            << (p.density == 0 ? L"compact" : p.density == 2 ? L"spacious" : L"normal")
+            << L"\"\n}\n";
+        if (!out) return false;
+        // Make it active immediately and persist the choice.
+        LoadThemePacks();
+        for (size_t i = 0; i < g_themes.size(); ++i)
+            if (g_themes[i].name == name) { ApplyTheme(i); break; }
+        SaveThemeSetting();
+        return true;
     }
 
     void SaveThemeSetting() {

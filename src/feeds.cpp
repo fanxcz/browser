@@ -175,3 +175,92 @@ FetchOutcome BuildFeedPage(const std::wstring& url,
     out.text = NormalizeDisplayText(text);
     return out;
 }
+
+// ---------------------------------------------------------------------------
+// RSS subscriptions: data/feeds.txt, one feed URL per line.
+// ---------------------------------------------------------------------------
+
+static fs::path FeedsFilePath() {
+    return DataDirPath() / L"feeds.txt";
+}
+
+std::vector<std::wstring> LoadFeedSubscriptions() {
+    std::vector<std::wstring> out;
+    std::wifstream in(FeedsFilePath());
+    std::wstring line;
+    while (std::getline(in, line)) {
+        line = TrimWide(line);
+        if (!line.empty() && line.front() != L'#') out.push_back(line);
+    }
+    return out;
+}
+
+static void SaveFeedSubscriptions(const std::vector<std::wstring>& feeds) {
+    std::wofstream out(FeedsFilePath(), std::ios::trunc);
+    for (const auto& u : feeds) out << u << L'\n';
+}
+
+bool FeedSubscribe(const std::wstring& url) {
+    std::wstring u = NormalizeUrl(url);
+    if (u.empty()) return false;
+    auto feeds = LoadFeedSubscriptions();
+    for (const auto& f : feeds)
+        if (LowerWide(f) == LowerWide(u)) return false; // already added
+    feeds.push_back(u);
+    SaveFeedSubscriptions(feeds);
+    return true;
+}
+
+bool FeedUnsubscribe(size_t index1) {
+    auto feeds = LoadFeedSubscriptions();
+    if (index1 < 1 || index1 > feeds.size()) return false;
+    feeds.erase(feeds.begin() + static_cast<long>(index1 - 1));
+    SaveFeedSubscriptions(feeds);
+    return true;
+}
+
+// browser://feeds — aggregate view: every subscribed feed with its item
+// count and latest headline (cached fetch, parallel-ish sequential is fine
+// for a handful of feeds inside the load worker).
+FetchOutcome BuildFeedsPage() {
+    FetchOutcome out;
+    out.ok = true;
+    out.finalUrl = std::wstring(kInternalPrefix) + L"feeds";
+    out.title = "RSS-ленты";
+
+    const auto feeds = LoadFeedSubscriptions();
+    std::string text;
+    text += "Подписки на RSS/Atom-ленты.\n"
+            "feed add <url> — подписаться, feed del <n> — отписаться,\n"
+            "feeds — эта страница.\n\n";
+
+    if (feeds.empty()) {
+        text += "Лент нет. Пример: feed add https://habr.com/ru/rss/all/all/\n";
+    }
+
+    for (size_t i = 0; i < feeds.size() && i < 12; ++i) {
+        const std::wstring& url = feeds[i];
+        text += std::to_string(i + 1) + ". " + ToUtf8(url) + "\n";
+        out.links.push_back(
+            {std::to_string(i + 1) + ". " + ToUtf8(url), url});
+
+        Response r = Request(url, CacheMode::Use, nullptr);
+        if (!r.ok) {
+            text += "   недоступна\n\n";
+            continue;
+        }
+        const std::string body(r.body.begin(), r.body.end());
+        if (!LooksLikeFeed(body)) {
+            text += "   не похоже на RSS/Atom\n\n";
+            continue;
+        }
+        FetchOutcome page = BuildFeedPage(url, body);
+        const size_t count = page.links.size();
+        text += "   " + std::to_string(count) + " записей";
+        if (!page.links.empty())
+            text += " · свежее: " + page.links.front().label;
+        text += "\n\n";
+    }
+    out.text = NormalizeDisplayText(text);
+    return out;
+}

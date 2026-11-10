@@ -256,6 +256,12 @@ namespace console_ui {
                 UiToggleTabPin();
             return;
         }
+        // Bare `tabname`/`rename` clears the custom label — the tab goes
+        // back to showing the automatic page title.
+        if (lower == L"tabname" || lower == L"rename") {
+            UiSetTabLabel(L"");
+            return;
+        }
         if (lower.rfind(L"tabname ", 0) == 0 ||
             lower.rfind(L"rename ", 0) == 0) {
             const size_t off = lower.rfind(L"tabname ", 0) == 0 ? 8 : 7;
@@ -479,6 +485,17 @@ namespace console_ui {
         if (lower == L"theme" || lower.rfind(L"theme ", 0) == 0) {
             const std::wstring arg = lower.size() > 5
                 ? LowerWide(TrimWide(value.substr(6))) : L"";
+            if (arg.rfind(L"save ", 0) == 0 || arg == L"save") {
+                const std::wstring tname = TrimWide(arg.substr(4));
+                if (tname.empty()) {
+                    g_consoleStatus = L"Формат: theme save <имя>";
+                } else if (SaveThemeAs(tname)) {
+                    g_consoleStatus = L"Тема сохранена: " + tname;
+                } else {
+                    g_consoleStatus = L"Не удалось сохранить тему.";
+                }
+                return;
+            }
             if (arg.empty() || arg == L"list") {
                 std::wstring list = L"Темы: ";
                 for (size_t i = 0; i < g_themes.size(); ++i) {
@@ -673,14 +690,64 @@ namespace console_ui {
             UiCloseOtherTabs(CurrentView(state));
             return;
         }
-        if (lower == L"update") {
+        if (lower == L"update" || lower.rfind(L"update ", 0) == 0) {
+            const std::wstring arg = lower.size() > 6
+                ? LowerWide(TrimWide(value.substr(7))) : L"";
+            if (arg == L"apply" || arg == L"install" || arg == L"now") {
+                g_consoleStatus = UiApplyUpdate();
+                return;
+            }
             // Force an update check now: drop the daily stamp and reschedule.
             std::error_code ec;
             fs::remove(DataDirPath() / L"update_check.txt", ec);
             UiScheduleUpdateCheck();
-            g_consoleStatus = L"Проверяю обновления…";
+            g_consoleStatus = L"Проверяю обновления… (update apply — установить)";
             return;
         }
+        if (lower == L"settings") {
+            UiOpenInternalPage(L"settings");
+            state.focus = Focus::Page;
+            return;
+        }
+        if (lower == L"feeds" || lower == L"feed") {
+            UiOpenInternalPage(L"feeds");
+            state.focus = Focus::Page;
+            return;
+        }
+        if (lower == L"feed-list" || lower == L"feed list") {
+            UiOpenInternalPage(L"feeds");
+            state.focus = Focus::Page;
+            return;
+        }
+        if (lower.rfind(L"feed del ", 0) == 0 ||
+            lower.rfind(L"feed remove ", 0) == 0 ||
+            lower.rfind(L"feed rm ", 0) == 0) {
+            const size_t off = lower.rfind(L"feed remove ", 0) == 0 ? 12
+                : lower.rfind(L"feed del ", 0) == 0 ? 9 : 8;
+            try {
+                const size_t n = std::stoul(ToUtf8(
+                    TrimWide(value.substr(off))));
+                g_consoleStatus = FeedUnsubscribe(n)
+                    ? L"Лента удалена."
+                    : L"Нет ленты с таким номером (см. feeds).";
+            } catch (...) { g_consoleStatus = L"Формат: feed del <номер>"; }
+            return;
+        }
+        if (lower.rfind(L"feed add ", 0) == 0 ||
+            lower.rfind(L"feed ", 0) == 0) {
+            // "feed <url>" and "feed add <url>" both subscribe.
+            const size_t off = lower.rfind(L"feed add ", 0) == 0 ? 9 : 5;
+            const std::wstring u = TrimWide(value.substr(off));
+            if (u.empty()) {
+                g_consoleStatus = L"Формат: feed add <url-ленты>";
+            } else if (FeedSubscribe(u)) {
+                g_consoleStatus = L"Лента добавлена: " + u;
+            } else {
+                g_consoleStatus = L"Не удалось добавить (уже есть или плохой URL).";
+            }
+            return;
+        }
+        if (lower == L"palette") { PaletteOpen(state); return; }
         if (lower == L"about") { UiOpenInternalPage(L"about"); state.focus = Focus::Page; return; }
         if (lower == L"notes") { UiOpenInternalPage(L"notes"); state.focus = Focus::Page; return; }
         if (lower == L"cache") { UiOpenInternalPage(L"cache"); state.focus = Focus::Page; return; }

@@ -51,8 +51,9 @@ namespace console_ui {
 
     // Status-line color: errors red, confirmations green, the rest muted.
     // Derived from raw console attributes so it works in every theme.
-    WORD StatusColor(const std::wstring& status, bool loading) {
-        if (loading) return kAccent;
+    // 0 = plain, 1 = error, 2 = ok, 3 = loading.
+    static int StatusKind(const std::wstring& status, bool loading) {
+        if (loading) return 3;
         static const wchar_t* kErr[] = {
             L"Не ", L"Нельзя", L"Ошибка", L"недоступ", L"Отмена",
             L"отмен", L"fail", L"Превышен", L"не найд", L"Пусто" };
@@ -62,12 +63,30 @@ namespace console_ui {
             L"Обновлено", L"Выделено", L"строка выделена",
             L"Слово выделено", L"Автообновление" };
         for (const wchar_t* w : kErr)
-            if (status.find(w) != std::wstring::npos)
-                return FOREGROUND_RED | FOREGROUND_INTENSITY;
+            if (status.find(w) != std::wstring::npos) return 1;
         for (const wchar_t* w : kOk)
-            if (status.find(w) != std::wstring::npos)
-                return FOREGROUND_GREEN | FOREGROUND_INTENSITY;
-        return kMuted;
+            if (status.find(w) != std::wstring::npos) return 2;
+        return 0;
+    }
+
+    WORD StatusColor(const std::wstring& status, bool loading) {
+        switch (StatusKind(status, loading)) {
+        case 1: return FOREGROUND_RED | FOREGROUND_INTENSITY;
+        case 2: return FOREGROUND_GREEN | FOREGROUND_INTENSITY;
+        case 3: return kAccent;
+        default: return kMuted;
+        }
+    }
+
+    // Colored status glyph drawn before the status text.
+    static std::pair<wchar_t, WORD> StatusMark(const std::wstring& status,
+                                               bool loading) {
+        switch (StatusKind(status, loading)) {
+        case 1: return {L'✗', FOREGROUND_RED | FOREGROUND_INTENSITY};
+        case 2: return {L'✓', FOREGROUND_GREEN | FOREGROUND_INTENSITY};
+        case 3: return {L'◌', kAccent};
+        default: return {L'·', kMuted};
+        }
     }
 
     void Render(State& state) {
@@ -130,7 +149,9 @@ namespace console_ui {
                     L"theme", L"zoom", L"statusbar", L"prefetch",
                     L"fullscreen", L"linkpage", L"saveimg", L"imglinks",
                     L"lucky", L"snapshot", L"sessions", L"restore",
-                    L"find", L"images", L"copy" };
+                    L"find", L"images", L"copy",
+                    L"settings", L"feeds", L"feed", L"palette",
+                    L"update", L"noimg", L"verify" };
                 const std::wstring low = LowerWide(in);
                 std::vector<std::wstring> cmds;
                 for (const wchar_t* c : kCmds) {
@@ -190,10 +211,13 @@ namespace console_ui {
             if (loading) {
                 statusLine = statusLine.empty() ? L"Загрузка…" : statusLine;
             }
-            if (!statusLine.empty())
+            if (!statusLine.empty()) {
+                const auto mark = StatusMark(statusLine, loading);
                 Center(state, height - 1,
-                       Shorten(statusLine, static_cast<size_t>(width - 4)),
+                       std::wstring(1, mark.first) + L" " +
+                       Shorten(statusLine, static_cast<size_t>(width - 6)),
                        StatusColor(statusLine, loading));
+            }
         } else {
             // Browser chrome: row 0 = tabs, row 1 = nav buttons,
             // rows 2-4 = omnibox (address bar), content below.
@@ -585,9 +609,14 @@ namespace console_ui {
                 std::swprintf(cb, 8, L"%02d:%02d", tmv.tm_hour, tmv.tm_min);
                 At(state, std::max(2, width - 7), footerRow, cb, kMuted);
             }
-            At(state, 2, height - 3,
-               Shorten(status, static_cast<size_t>(width - 4)),
-               StatusColor(status, loading), width - 4);
+            {
+                const auto mark = StatusMark(status, loading);
+                At(state, 2, height - 3, std::wstring(1, mark.first),
+                   mark.second);
+                At(state, 4, height - 3,
+                   Shorten(status, static_cast<size_t>(width - 6)),
+                   StatusColor(status, loading), width - 6);
+            }
             // Selection size for the indicator line (screen rect or
             // line-range selection).
             std::wstring selInfo;
@@ -652,6 +681,7 @@ namespace console_ui {
 
         // Autocomplete dropdown paints last so it overlays page content.
         DrawSuggestions(state);
+        DrawPalette(state);        // Ctrl+K palette overlays everything
         DrawSettingsMenu(state);
         DrawScreenSelection(state); // terminal-style highlight on top
         FlushFrame(state);          // diff-push the finished frame

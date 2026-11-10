@@ -428,6 +428,7 @@ std::wstring UiGetClipboardText();
 size_t UiTabCount();
 size_t UiActiveTabIndex();
 std::wstring UiTabTitle(size_t index);
+std::wstring UiTabUrl(size_t index);
 bool UiNavCanBack();
 bool UiNavCanForward();
 
@@ -507,6 +508,22 @@ void UiApplyPrefetchSetting();
 int UiZoomPercent();
 void UiSetZoomPercent(int percent);
 void UiApplyZoomSetting();
+
+// Hover prefetch: fetch a single link into the cache on mouse hover.
+void UiPrefetchUrl(const std::wstring& url);
+// True while the tab has a running or queued page load (tab-strip pulse).
+bool UiTabBusy(size_t index);
+// --safe-mode: skip session/tab/history restore and background checks.
+extern bool g_safeMode;
+// Auto-update: download the latest release exe and swap it in.
+// Returns an empty string on success-start, or a status message.
+std::wstring UiApplyUpdate();
+
+// RSS subscriptions (feeds.cpp).
+std::vector<std::wstring> LoadFeedSubscriptions();
+bool FeedSubscribe(const std::wstring& url);
+bool FeedUnsubscribe(size_t index1);
+FetchOutcome BuildFeedsPage();
 
 // Startup maintenance: daily data backup + cache size eviction.
 void MaybeDailyBackup();

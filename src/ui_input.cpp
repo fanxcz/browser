@@ -9,6 +9,10 @@ namespace console_ui {
         const bool shift = (modifiers & SHIFT_PRESSED) != 0;
         const WORD code = key.wVirtualKeyCode;
 
+        // Command palette is modal: it eats keys until closed (Esc) or
+        // until a Ctrl/Alt chord dismisses it and falls through.
+        if (state.paletteOpen && PaletteHandleKey(state, key)) return;
+
         // Image viewer overlay: any key closes it; D downloads the file.
         if (state.viewingImage) {
             if (!ctrl && !alt && (code == 'D' || code == 'S')) {
@@ -305,12 +309,7 @@ namespace console_ui {
             return;
         }
         if (ctrl && code == 'G') { FindOnPage(state); return; } // find next
-        if (ctrl && code == 'K') { // focus the address/search bar
-            state.focus = Focus::Search;
-            state.findMode = false;
-            state.browsingHistory = false;
-            return;
-        }
+        if (ctrl && code == 'K') { PaletteOpen(state); return; } // palette
         if (ctrl && code == 'I') { // Ctrl+I ~ Tab: jump to the omnibox
             state.focus = Focus::Search;
             state.findMode = false;

@@ -26,7 +26,7 @@ text https://example.com
 wait 200
 key enter
 wait 6000
-expect Example Domain
+expect example.com
 expect This domain
 
 # --- mouse drag selection + Ctrl+C ---
@@ -49,7 +49,7 @@ key alt+left
 wait 1500
 key alt+right
 wait 5000
-expect Example Domain
+expect This domain
 
 # --- scroll wheel ---
 wheel 100 20 -3
@@ -81,7 +81,7 @@ wait 1500
 expect Введите запрос
 key ctrl+w
 wait 1000
-expect Example Domain
+expect This domain
 
 # --- internal pages ---
 key ctrl+h
@@ -178,7 +178,7 @@ expectclip domain
 down 5 20
 up 5 20
 wait 300
-expect Example Domain
+expect This domain
 # --- feature pack smoke tests (all local, no extra navigation) ---
 key ctrl+l
 wait 300
